@@ -154,6 +154,9 @@ init_agent() {
             warn "Created empty .env file"
         fi
     fi
+
+    # Ensure .env file is writable (important for Docker bind mounts)
+    chmod 666 "${agent_dir}/.env" 2>/dev/null || true
     
     # Create agent-specific SOUL.md if not exists
     if [ ! -f "${agent_dir}/SOUL.md" ]; then
@@ -198,9 +201,9 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./.env:/app/.env
-      - ./SOUL.md:/app/SOUL.md
-      - ./workspace:/app/workspace
+      - ./.env:/app/.env:rw
+      - ./SOUL.md:/app/SOUL.md:rw
+      - ./workspace:/app/workspace:rw
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
@@ -701,6 +704,10 @@ main() {
                     init_agent
                 else
                     info "Using existing agent '${AGENT_NAME}' at ${agent_dir}"
+                    # Regenerate compose file to apply any updates
+                    generate_compose_file
+                    # Ensure .env file is writable
+                    chmod 666 "${agent_dir}/.env" 2>/dev/null || true
                 fi
                 ;;
         esac
@@ -708,6 +715,11 @@ main() {
 
     case "$action" in
         build)
+            # Regenerate compose file to apply any updates
+            if [ -n "$AGENT_NAME" ]; then
+                generate_compose_file
+                chmod 666 "$(get_agent_dir)/.env" 2>/dev/null || true
+            fi
             build_images
             ;;
         start)
