@@ -1,0 +1,355 @@
+//! Prompt templates and engineering
+
+use handlebars::Handlebars;
+use serde::Serialize;
+use crate::error::{Error, Result};
+use std::path::Path;
+use chrono::Utc;
+
+/// Default path for the SOUL.md file
+pub const SOUL_FILE_PATH: &str = "SOUL.md";
+
+/// A prompt template using Handlebars syntax
+pub struct PromptTemplate {
+    /// Template name
+    name: String,
+    /// Handlebars registry
+    registry: Handlebars<'static>,
+}
+
+impl PromptTemplate {
+    /// Create a new prompt template
+    pub fn new(name: impl Into<String>, template: &str) -> Result<Self> {
+        let name = name.into();
+        let mut registry = Handlebars::new();
+
+        registry
+            .register_template_string(&name, template)
+            .map_err(|e| Error::Internal(format!("Invalid template: {}", e)))?;
+
+        Ok(PromptTemplate { name, registry })
+    }
+
+    /// Render the template with given data
+    pub fn render<T: Serialize>(&self, data: &T) -> Result<String> {
+        self.registry
+            .render(&self.name, data)
+            .map_err(|e| Error::Internal(format!("Template render error: {}", e)))
+    }
+}
+
+// ============================================================================
+// Soul Management
+// ============================================================================
+
+/// Agent Soul - personality and behavioral configuration
+#[derive(Debug, Clone)]
+pub struct Soul {
+    /// Raw content of the SOUL.md file
+    pub content: String,
+    /// Path to the SOUL.md file
+    pub path: String,
+}
+
+impl Soul {
+    /// Load soul from the default path
+    pub fn load() -> Result<Self> {
+        Self::load_from(SOUL_FILE_PATH)
+    }
+
+    /// Load soul from a specific path
+    pub fn load_from(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| Error::Config(format!("Failed to load SOUL.md: {}", e)))?;
+        
+        Ok(Soul {
+            content,
+            path: path.to_string_lossy().to_string(),
+        })
+    }
+
+    /// Create a default soul if none exists
+    pub fn load_or_default() -> Self {
+        Self::load().unwrap_or_else(|_| Self::default())
+    }
+
+    /// Save the soul to disk
+    pub fn save(&self) -> Result<()> {
+        std::fs::write(&self.path, &self.content)
+            .map_err(|e| Error::Config(format!("Failed to save SOUL.md: {}", e)))
+    }
+
+    /// Get the soul as a system prompt
+    pub fn as_system_prompt(&self) -> String {
+        format!(
+            "{}\n\n---\n\n## Agent Soul\n\n{}",
+            DEFAULT_SYSTEM_PROMPT,
+            self.content
+        )
+    }
+
+    /// Update a specific section in the soul
+    pub fn update_section(&mut self, section: &str, new_content: &str) -> Result<()> {
+        // Find the section header
+        let section_header = format!("### {}", section);
+        
+        if let Some(start) = self.content.find(&section_header) {
+            // Find the next section or end of file
+            let after_header = start + section_header.len();
+            let end = self.content[after_header..]
+                .find("\n### ")
+                .or_else(|| self.content[after_header..].find("\n## "))
+                .or_else(|| self.content[after_header..].find("\n---"))
+                .map(|pos| after_header + pos)
+                .unwrap_or(self.content.len());
+
+            // Replace the section content
+            self.content = format!(
+                "{}{}\n\n{}\n\n{}",
+                &self.content[..start],
+                section_header,
+                new_content,
+                &self.content[end..]
+            );
+
+            // Update timestamp
+            self.update_timestamp();
+            self.save()?;
+        }
+        
+        Ok(())
+    }
+
+    /// Add a learned preference
+    pub fn add_preference(&mut self, preference: &str) -> Result<()> {
+        let current = self.get_section_content("User Preferences");
+        let new_content = if current.contains("None learned yet") {
+            format!("- {}", preference)
+        } else {
+            format!("{}\n- {}", current.trim(), preference)
+        };
+        self.update_section("User Preferences", &new_content)
+    }
+
+    /// Add a frequently asked topic
+    pub fn add_topic(&mut self, topic: &str) -> Result<()> {
+        let current = self.get_section_content("Frequently Asked Topics");
+        let new_content = if current.contains("None recorded yet") {
+            format!("- {}", topic)
+        } else {
+            format!("{}\n- {}", current.trim(), topic)
+        };
+        self.update_section("Frequently Asked Topics", &new_content)
+    }
+
+    /// Add important context
+    pub fn add_context(&mut self, context: &str) -> Result<()> {
+        let current = self.get_section_content("Important Context");
+        let new_content = if current.contains("None stored yet") {
+            format!("- {}", context)
+        } else {
+            format!("{}\n- {}", current.trim(), context)
+        };
+        self.update_section("Important Context", &new_content)
+    }
+
+    /// Get content of a specific section
+    fn get_section_content(&self, section: &str) -> String {
+        let section_header = format!("### {}", section);
+        
+        if let Some(start) = self.content.find(&section_header) {
+            let after_header = start + section_header.len();
+            let end = self.content[after_header..]
+                .find("\n### ")
+                .or_else(|| self.content[after_header..].find("\n## "))
+                .or_else(|| self.content[after_header..].find("\n---"))
+                .map(|pos| after_header + pos)
+                .unwrap_or(self.content.len());
+            
+            self.content[after_header..end].trim().to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Update the last modified timestamp
+    fn update_timestamp(&mut self) {
+        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+        if let Some(pos) = self.content.rfind("*Last updated:") {
+            if let Some(end) = self.content[pos..].find('*').map(|p| pos + p + 1) {
+                let next_star = self.content[end..].find('*').map(|p| end + p + 1);
+                if let Some(final_end) = next_star {
+                    self.content = format!(
+                        "{}*Last updated: {}*{}",
+                        &self.content[..pos],
+                        timestamp,
+                        &self.content[final_end..]
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl Default for Soul {
+    fn default() -> Self {
+        Soul {
+            content: include_str!("../../SOUL.md").to_string(),
+            path: SOUL_FILE_PATH.to_string(),
+        }
+    }
+}
+
+/// Default system prompt for the agent
+pub const DEFAULT_SYSTEM_PROMPT: &str = r#"You are OpenAgent, a helpful AI assistant with access to various tools and capabilities.
+
+## Your Capabilities
+- Answer questions and have conversations
+- Execute code in a sandboxed environment
+- Search and manage memories
+- Handle file operations within the allowed workspace
+
+## Guidelines
+1. Be helpful, accurate, and concise
+2. If you're unsure about something, say so
+3. When executing code, always explain what you're doing
+4. Respect user privacy and security constraints
+5. Ask for clarification when instructions are ambiguous
+
+## Response Format
+- Use markdown formatting when appropriate
+- For code, use proper code blocks with language specification
+- Keep responses focused and relevant
+"#;
+
+/// Code execution prompt template
+pub const CODE_EXECUTION_PROMPT: &str = r#"You have been asked to execute code. Here is the context:
+
+**Language:** {{language}}
+**Execution Environment:** {{environment}}
+
+**Code:**
+```{{language}}
+{{code}}
+```
+
+{{#if input}}
+**Input:**
+{{input}}
+{{/if}}
+
+Please execute this code and provide the results. If there are any errors, explain what went wrong and suggest fixes.
+"#;
+
+/// Memory search prompt template
+pub const MEMORY_SEARCH_PROMPT: &str = r#"Search your memories for information related to:
+
+**Query:** {{query}}
+
+{{#if context}}
+**Context:**
+{{context}}
+{{/if}}
+
+Provide relevant information from your memory, citing sources when possible.
+"#;
+
+/// Summarization prompt template
+pub const SUMMARIZATION_PROMPT: &str = r#"Summarize the following content:
+
+{{content}}
+
+{{#if max_length}}
+**Maximum length:** {{max_length}} words
+{{/if}}
+
+{{#if focus}}
+**Focus on:** {{focus}}
+{{/if}}
+"#;
+
+/// Prompt builder for constructing complex prompts
+#[derive(Default)]
+pub struct PromptBuilder {
+    parts: Vec<String>,
+}
+
+impl PromptBuilder {
+    /// Create a new prompt builder
+    pub fn new() -> Self {
+        PromptBuilder { parts: Vec::new() }
+    }
+
+    /// Add a section with a header
+    pub fn section(mut self, header: &str, content: &str) -> Self {
+        self.parts.push(format!("## {}\n{}", header, content));
+        self
+    }
+
+    /// Add raw text
+    pub fn text(mut self, text: &str) -> Self {
+        self.parts.push(text.to_string());
+        self
+    }
+
+    /// Add a code block
+    pub fn code(mut self, language: &str, code: &str) -> Self {
+        self.parts.push(format!("```{}\n{}\n```", language, code));
+        self
+    }
+
+    /// Add a list of items
+    pub fn list(mut self, items: &[&str]) -> Self {
+        let list = items
+            .iter()
+            .map(|item| format!("- {}", item))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.parts.push(list);
+        self
+    }
+
+    /// Add a numbered list
+    pub fn numbered_list(mut self, items: &[&str]) -> Self {
+        let list = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| format!("{}. {}", i + 1, item))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.parts.push(list);
+        self
+    }
+
+    /// Build the final prompt
+    pub fn build(self) -> String {
+        self.parts.join("\n\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_prompt_template() {
+        let template = PromptTemplate::new("test", "Hello, {{name}}!").unwrap();
+        let result = template.render(&json!({"name": "World"})).unwrap();
+        assert_eq!(result, "Hello, World!");
+    }
+
+    #[test]
+    fn test_prompt_builder() {
+        let prompt = PromptBuilder::new()
+            .section("Introduction", "This is a test")
+            .code("python", "print('hello')")
+            .list(&["Item 1", "Item 2"])
+            .build();
+
+        assert!(prompt.contains("## Introduction"));
+        assert!(prompt.contains("```python"));
+        assert!(prompt.contains("- Item 1"));
+    }
+}

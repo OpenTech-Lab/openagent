@@ -1,0 +1,40 @@
+{
+  "name": "openagent",
+  "version": "0.1.0",
+  "description": "A high-performance, low-latency, and secure AI agent framework built with Rust",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --release",
+    "build:debug": "cargo build",
+    "dev": "cargo run --release --bin openagent-gateway",
+    "gateway": "cargo run --release --bin openagent-gateway",
+    "gateway:watch": "cargo watch -x 'run --bin openagent-gateway'",
+    "cli": "cargo run --release --bin openagent --",
+    "openagent": "cargo run --release --bin openagent --",
+    "init": "cargo run --release --bin openagent -- init",
+    "onboard": "cargo run --release --bin openagent -- onboard",
+    "status": "cargo run --release --bin openagent -- status",
+    "chat": "cargo run --release --bin openagent -- chat",
+    "models": "cargo run --release --bin openagent -- models",
+    "test": "cargo test",
+    "test:watch": "cargo watch -x test",
+    "lint": "cargo clippy -- -D warnings",
+    "fmt": "cargo fmt",
+    "fmt:check": "cargo fmt -- --check",
+    "clean": "cargo clean",
+    "doc": "cargo doc --no-deps --open",
+    "ui:build": "echo 'UI build placeholder - implement when UI is added'",
+    "db:migrate": "sqlx migrate run",
+    "db:prepare": "cargo sqlx prepare"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "telegram",
+    "rust"
+  ],
+  "author": "OpenAgent Contributors",
+  "license": "MIT",
+  "devDependencies": {}
+}

@@ -1,0 +1,109 @@
+[package]
+name = "openagent"
+version = "0.1.0"
+edition = "2021"
+authors = ["OpenAgent Contributors"]
+description = "A high-performance, low-latency, and secure AI agent framework built with Rust"
+license = "MIT"
+repository = "https://github.com/your-org/openagent"
+readme = "README.md"
+keywords = ["ai", "agent", "llm", "telegram", "rust"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+name = "openagent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openagent"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "openagent-gateway"
+path = "src/bin/gateway.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+
+# Telegram bot framework
+teloxide = { version = "0.14", features = ["macros"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Database - PostgreSQL with pgvector
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+pgvector = { version = "0.4", features = ["sqlx"] }
+
+# OpenSearch client
+opensearch = "2.3"
+
+# Environment and configuration
+dotenvy = "0.15"
+config = "0.15"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+dialoguer = { version = "0.11", features = ["password", "fuzzy-select"] }
+console = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async traits
+async-trait = "0.1"
+
+# UUID generation
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Wasm runtime for sandbox
+wasmtime = "29.0"
+
+# Docker/container interaction
+bollard = "0.18"
+
+# Tokio utilities
+futures = "0.3"
+
+# Password/secrets handling
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Prompt templating
+handlebars = "6.3"
+
+# Retry logic
+backoff = { version = "0.4", features = ["tokio"] }
+
+# URL parsing
+url = "2.5"
+
+# Find executables in PATH
+which = "7.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = "0.6"
+tempfile = "3.16"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true

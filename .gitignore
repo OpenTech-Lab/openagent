@@ -1,0 +1,66 @@
+# Build artifacts
+/target/
+debug/
+release/
+
+# Cargo lock file (include for binaries, exclude for libraries)
+# Cargo.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Log files
+*.log
+logs/
+
+# Workspace directory (user files)
+/workspace/
+
+# Database files
+*.db
+*.sqlite
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Documentation build
+/doc/
+
+# Node modules (for UI)
+node_modules/
+.pnpm-store/
+
+# UI build output
+ui/dist/
+ui/build/
+
+# Wasm artifacts
+*.wasm
+
+# Core dumps
+core
+
+# Backup files
+*.bak
+*.backup
+
+# OS specific
+Thumbs.db
+.Spotlight-V100
+.Trashes
