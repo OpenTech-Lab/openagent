@@ -10,6 +10,7 @@
 mod client;
 mod conversation;
 pub mod prompts;
+mod system_command;
 mod tools;
 mod types;
 mod web_search;
@@ -17,6 +18,7 @@ mod web_search;
 pub use client::OpenRouterClient;
 pub use conversation::{Conversation, ConversationManager};
 pub use prompts::PromptTemplate;
+pub use system_command::SystemCommandTool;
 pub use tools::{Tool, ToolCall, ToolResult, ToolRegistry, ReadFileTool, WriteFileTool};
 pub use types::*;
 pub use web_search::{

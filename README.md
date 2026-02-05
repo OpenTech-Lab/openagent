@@ -93,6 +93,9 @@ docker compose run --rm openagent-cli status
 
 # View logs
 docker compose logs -f
+
+# Or
+docker logs --tail 30 openagent-alice-gateway
 ```
 
 **Docker Setup Script Options:**

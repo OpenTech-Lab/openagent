@@ -4,7 +4,7 @@
 
 use openagent::agent::{
     ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
-    ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, 
+    ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
@@ -100,7 +100,10 @@ impl AppState {
         let mut tools = ToolRegistry::new();
         tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
         tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
-        
+
+        // Register system command tool for OS operations (apt, mv, ls, etc.)
+        tools.register(SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone()));
+
         // Register web search tools (DuckDuckGo is always available, no API key needed)
         tools.register(DuckDuckGoSearchTool::new());
         
