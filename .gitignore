@@ -56,8 +56,8 @@ ui/build/
 # Wasm artifacts
 *.wasm
 
-# Core dumps
-core
+# Core dumps (must be at root to not ignore src/core/)
+/core
 
 # Backup files
 *.bak
