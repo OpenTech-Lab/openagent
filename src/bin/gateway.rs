@@ -1,6 +1,7 @@
 //! OpenAgent Telegram Gateway
 //!
 //! The main entry point for the Telegram bot interface.
+//! Implements OpenClaw-style session sandboxing and DM pairing.
 
 use openagent::agent::{
     ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
@@ -14,9 +15,10 @@ use openagent::sandbox::{create_executor, CodeExecutor, ExecutionRequest, Langua
 use openagent::{Error, Result};
 
 use secrecy::ExposeSecret;
+use std::collections::HashSet;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
+use teloxide::types::{ChatKind, ParseMode};
 use teloxide::utils::command::BotCommands;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -40,6 +42,77 @@ enum Command {
     Run(String),
     #[command(description = "Show status")]
     Status,
+    #[command(description = "Approve a user (admin only, e.g., /approve 123456789)")]
+    Approve(String),
+    #[command(description = "List pending pairing requests (admin only)")]
+    Pending,
+}
+
+/// Session type for sandboxing decisions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionType {
+    /// Direct message (private chat) - trusted, runs on host
+    DirectMessage,
+    /// Group chat - sandboxed, restricted commands
+    Group,
+}
+
+/// Pairing state for DM users
+#[derive(Debug, Clone)]
+struct PairingManager {
+    /// Approved user IDs
+    approved_users: HashSet<i64>,
+    /// Pending pairing requests: user_id -> pairing_code
+    pending_requests: std::collections::HashMap<i64, String>,
+    /// Admin user IDs (can approve others)
+    admin_users: HashSet<i64>,
+}
+
+impl PairingManager {
+    fn new(admin_users: Vec<i64>) -> Self {
+        let mut approved = HashSet::new();
+        // Admins are automatically approved
+        for admin in &admin_users {
+            approved.insert(*admin);
+        }
+
+        PairingManager {
+            approved_users: approved,
+            pending_requests: std::collections::HashMap::new(),
+            admin_users: admin_users.into_iter().collect(),
+        }
+    }
+
+    /// Check if user is approved
+    fn is_approved(&self, user_id: i64) -> bool {
+        self.approved_users.contains(&user_id) || self.admin_users.contains(&user_id)
+    }
+
+    /// Check if user is admin
+    fn is_admin(&self, user_id: i64) -> bool {
+        self.admin_users.contains(&user_id)
+    }
+
+    /// Generate pairing code for a user
+    fn generate_pairing_code(&mut self, user_id: i64) -> String {
+        let code = format!("{:06}", rand::random::<u32>() % 1_000_000);
+        self.pending_requests.insert(user_id, code.clone());
+        code
+    }
+
+    /// Approve a user
+    fn approve_user(&mut self, user_id: i64) -> bool {
+        self.pending_requests.remove(&user_id);
+        self.approved_users.insert(user_id)
+    }
+
+    /// Get pending requests (returns owned data)
+    fn pending_users(&self) -> Vec<(i64, String)> {
+        self.pending_requests
+            .iter()
+            .map(|(id, code)| (*id, code.clone()))
+            .collect()
+    }
 }
 
 /// Application state shared across handlers
@@ -49,7 +122,12 @@ struct AppState {
     conversations: RwLock<ConversationManager>,
     memory_store: Option<MemoryStore>,
     executor: Box<dyn CodeExecutor>,
-    tools: ToolRegistry,
+    /// Tools for DM sessions (full access)
+    dm_tools: ToolRegistry,
+    /// Tools for group sessions (sandboxed)
+    group_tools: ToolRegistry,
+    /// Pairing manager for DM approval
+    pairing: RwLock<PairingManager>,
 }
 
 impl AppState {
@@ -57,7 +135,7 @@ impl AppState {
         // Get OpenRouter config (required for now)
         let openrouter_config = config.provider.openrouter.clone()
             .ok_or_else(|| Error::Config("OpenRouter not configured. Set OPENROUTER_API_KEY environment variable.".into()))?;
-        
+
         // Initialize OpenRouter client
         let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
 
@@ -96,28 +174,53 @@ impl AppState {
         // Initialize code executor
         let executor = create_executor(&config.sandbox).await?;
 
-        // Initialize tool registry
-        let mut tools = ToolRegistry::new();
-        tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
-        tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
-
-        // Register system command tool for OS operations (apt, mv, ls, etc.)
-        tools.register(SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone()));
-
-        // Register web search tools (DuckDuckGo is always available, no API key needed)
-        tools.register(DuckDuckGoSearchTool::new());
-        
-        // Register Brave if API key available
+        // Initialize DM tools (full access for trusted users)
+        let mut dm_tools = ToolRegistry::new();
+        dm_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
+        dm_tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
+        // DM: SystemCommandTool with default denylist (dangerous commands blocked)
+        dm_tools.register(SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone()));
+        dm_tools.register(DuckDuckGoSearchTool::new());
         if let Some(brave) = BraveSearchTool::from_env() {
-            info!("Brave Search enabled");
-            tools.register(brave);
+            info!("Brave Search enabled for DM sessions");
+            dm_tools.register(brave);
         }
-        
-        // Register Perplexity if API key available
         if let Some(perplexity) = PerplexitySearchTool::from_env() {
-            info!("Perplexity Search enabled");
-            tools.register(perplexity);
+            info!("Perplexity Search enabled for DM sessions");
+            dm_tools.register(perplexity);
         }
+
+        // Initialize group tools (sandboxed - restricted commands)
+        let mut group_tools = ToolRegistry::new();
+        group_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
+        // Groups: SystemCommandTool with strict allowlist (only safe read commands)
+        let group_system_cmd = SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone())
+            .with_allowed_commands(vec![
+                "ls".to_string(),
+                "cat".to_string(),
+                "head".to_string(),
+                "tail".to_string(),
+                "wc".to_string(),
+                "grep".to_string(),
+                "find".to_string(),
+                "echo".to_string(),
+                "pwd".to_string(),
+                "whoami".to_string(),
+                "date".to_string(),
+                "uname".to_string(),
+            ]);
+        group_tools.register(group_system_cmd);
+        group_tools.register(DuckDuckGoSearchTool::new());
+
+        // Initialize pairing manager with admin users from config
+        let admin_users = config.channels.telegram
+            .as_ref()
+            .map(|t| t.allow_from.clone())
+            .unwrap_or_default();
+        let pairing = PairingManager::new(admin_users);
+
+        info!("DM tools: {} available", dm_tools.count());
+        info!("Group tools: {} available (sandboxed)", group_tools.count());
 
         Ok(AppState {
             config,
@@ -125,8 +228,26 @@ impl AppState {
             conversations: RwLock::new(conversations),
             memory_store,
             executor,
-            tools,
+            dm_tools,
+            group_tools,
+            pairing: RwLock::new(pairing),
         })
+    }
+
+    /// Get the appropriate tool registry based on session type
+    fn tools_for_session(&self, session_type: SessionType) -> &ToolRegistry {
+        match session_type {
+            SessionType::DirectMessage => &self.dm_tools,
+            SessionType::Group => &self.group_tools,
+        }
+    }
+}
+
+/// Determine session type from chat
+fn get_session_type(chat: &teloxide::types::Chat) -> SessionType {
+    match &chat.kind {
+        ChatKind::Private(_) => SessionType::DirectMessage,
+        _ => SessionType::Group, // Group, Supergroup, Channel
     }
 }
 
@@ -234,17 +355,23 @@ async fn message_handler(
     msg: Message,
     state: Arc<AppState>,
 ) -> ResponseResult<()> {
-    let user_id = msg.from.as_ref().map(|u| u.id.0.to_string()).unwrap_or_default();
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
     let chat_id = msg.chat.id;
+    let session_type = get_session_type(&msg.chat);
 
-    // Check if user is allowed
-    if let Some(telegram_config) = &state.config.channels.telegram {
-        if !telegram_config.allow_from.is_empty() {
-            let user_id_num: i64 = user_id.parse().unwrap_or(0);
-            if !telegram_config.allow_from.contains(&user_id_num) {
-                bot.send_message(chat_id, "You are not authorized to use this bot.")
-                    .await?;
-                return Ok(());
+    // For DMs, check if user is approved (pairing system)
+    if session_type == SessionType::DirectMessage {
+        let is_approved = state.pairing.read().await.is_approved(user_id);
+
+        if !is_approved {
+            // Check if this is an admin command that doesn't require approval
+            if let Some(text) = msg.text() {
+                if !text.starts_with('/') {
+                    // Not a command - require pairing
+                    return handle_pairing_request(bot, msg, state, user_id).await;
+                }
+            } else {
+                return handle_pairing_request(bot, msg, state, user_id).await;
             }
         }
     }
@@ -253,17 +380,51 @@ async fn message_handler(
     if let Some(text) = msg.text() {
         let text = text.to_string();
         if text.starts_with('/') {
-            return handle_command(bot, msg, state, &text).await;
+            return handle_command(bot, msg, state, &text, session_type).await;
         }
 
         // Regular message - chat with LLM
-        return handle_chat(bot, msg, state, &text, &user_id).await;
+        return handle_chat(bot, msg, state, &text, &user_id.to_string(), session_type).await;
     }
 
     // Handle documents/files
     if msg.document().is_some() {
-        return handle_document(bot, msg, state, &user_id).await;
+        return handle_document(bot, msg, state, &user_id.to_string()).await;
     }
+
+    Ok(())
+}
+
+/// Handle pairing request for unapproved DM users
+async fn handle_pairing_request(
+    bot: Bot,
+    msg: Message,
+    state: Arc<AppState>,
+    user_id: i64,
+) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let username = msg.from.as_ref()
+        .and_then(|u| u.username.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    // Generate pairing code
+    let code = state.pairing.write().await.generate_pairing_code(user_id);
+
+    info!("Pairing request from user {} (@{}), code: {}", user_id, username, code);
+
+    bot.send_message(
+        chat_id,
+        format!(
+            "🔐 *Pairing Required*\n\n\
+            You need to be approved before using this bot\\.\n\n\
+            Your pairing code: `{}`\n\
+            User ID: `{}`\n\n\
+            Please contact an administrator to approve your access\\.",
+            code, user_id
+        ),
+    )
+    .parse_mode(ParseMode::MarkdownV2)
+    .await?;
 
     Ok(())
 }
@@ -274,23 +435,34 @@ async fn handle_command(
     msg: Message,
     state: Arc<AppState>,
     text: &str,
+    session_type: SessionType,
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
-    let user_id = msg.from.as_ref().map(|u| u.id.0.to_string()).unwrap_or_default();
+    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64).unwrap_or(0);
 
     // Parse command
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
     let cmd = parts[0].trim_start_matches('/').to_lowercase();
+    // Remove @botname suffix if present
+    let cmd = cmd.split('@').next().unwrap_or(&cmd);
     let args = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
 
-    match cmd.as_str() {
+    match cmd {
         "start" => {
+            let session_info = match session_type {
+                SessionType::DirectMessage => "DM (full access)",
+                SessionType::Group => "Group (sandboxed)",
+            };
             bot.send_message(
                 chat_id,
-                "👋 Welcome to OpenAgent!\n\n\
-                I'm your AI assistant powered by OpenRouter. \
-                I can help you with coding, answer questions, and execute code.\n\n\
-                Use /help to see available commands.",
+                format!(
+                    "👋 Welcome to OpenAgent!\n\n\
+                    I'm your AI assistant powered by OpenRouter. \
+                    I can help you with coding, answer questions, and execute code.\n\n\
+                    Session type: {}\n\n\
+                    Use /help to see available commands.",
+                    session_info
+                ),
             )
             .await?;
         }
@@ -300,7 +472,7 @@ async fn handle_command(
         }
         "clear" => {
             let mut conversations = state.conversations.write().await;
-            conversations.clear_conversation(&user_id);
+            conversations.clear_conversation(&user_id.to_string());
             bot.send_message(chat_id, "✅ Conversation cleared.")
                 .await?;
         }
@@ -311,7 +483,7 @@ async fn handle_command(
                 .map(|c| c.default_model.as_str())
                 .unwrap_or("unknown");
             let model = conversations
-                .get(&user_id)
+                .get(&user_id.to_string())
                 .map(|c| c.model.as_str())
                 .unwrap_or(default_model);
             bot.send_message(chat_id, format!("Current model: `{}`", model))
@@ -327,7 +499,7 @@ async fn handle_command(
                 .await?;
             } else {
                 let mut conversations = state.conversations.write().await;
-                let conv = conversations.get_or_create(&user_id);
+                let conv = conversations.get_or_create(&user_id.to_string());
                 conv.model = args.clone();
                 bot.send_message(chat_id, format!("✅ Switched to model: {}", args))
                     .await?;
@@ -349,22 +521,87 @@ async fn handle_command(
                 .as_ref()
                 .map(|c| c.default_model.as_str())
                 .unwrap_or("not configured");
+            let tools = state.tools_for_session(session_type);
+            let session_info = match session_type {
+                SessionType::DirectMessage => "DM (full access)",
+                SessionType::Group => "Group (sandboxed)",
+            };
             let status = format!(
                 "🤖 *OpenAgent Status*\n\n\
                 Version: {}\n\
                 Model: {}\n\
+                Session: {}\n\
                 Execution: {}\n\
                 Database: {}\n\
                 Tools: {}",
                 openagent::VERSION,
                 default_model,
+                session_info,
                 state.config.sandbox.execution_env,
                 if state.memory_store.is_some() { "Connected" } else { "Not connected" },
-                state.tools.count()
+                tools.count()
             );
             bot.send_message(chat_id, status)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
+        }
+        "approve" => {
+            // Admin only command
+            let is_admin = state.pairing.read().await.is_admin(user_id);
+            if !is_admin {
+                bot.send_message(chat_id, "❌ Only administrators can approve users.")
+                    .await?;
+                return Ok(());
+            }
+
+            if args.is_empty() {
+                bot.send_message(chat_id, "Usage: /approve <user_id>")
+                    .await?;
+            } else {
+                match args.trim().parse::<i64>() {
+                    Ok(target_user_id) => {
+                        let approved = state.pairing.write().await.approve_user(target_user_id);
+                        if approved {
+                            bot.send_message(chat_id, format!("✅ User {} has been approved.", target_user_id))
+                                .await?;
+                            info!("Admin {} approved user {}", user_id, target_user_id);
+                        } else {
+                            bot.send_message(chat_id, format!("ℹ️ User {} was already approved.", target_user_id))
+                                .await?;
+                        }
+                    }
+                    Err(_) => {
+                        bot.send_message(chat_id, "❌ Invalid user ID. Please provide a numeric ID.")
+                            .await?;
+                    }
+                }
+            }
+        }
+        "pending" => {
+            // Admin only command
+            let pairing = state.pairing.read().await;
+            if !pairing.is_admin(user_id) {
+                bot.send_message(chat_id, "❌ Only administrators can view pending requests.")
+                    .await?;
+                return Ok(());
+            }
+
+            let pending = pairing.pending_users();
+            drop(pairing); // Release the lock before sending messages
+
+            if pending.is_empty() {
+                bot.send_message(chat_id, "No pending pairing requests.")
+                    .await?;
+            } else {
+                let mut response_msg = "📋 *Pending Pairing Requests:*\n\n".to_string();
+                for (uid, code) in pending {
+                    response_msg.push_str(&format!("• User `{}` \\- Code: `{}`\n", uid, code));
+                }
+                response_msg.push_str("\nUse `/approve <user_id>` to approve\\.");
+                bot.send_message(chat_id, response_msg)
+                    .parse_mode(ParseMode::MarkdownV2)
+                    .await?;
+            }
         }
         _ => {
             bot.send_message(chat_id, "Unknown command. Use /help to see available commands.")
@@ -382,6 +619,7 @@ async fn handle_chat(
     state: Arc<AppState>,
     text: &str,
     user_id: &str,
+    session_type: SessionType,
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
@@ -397,11 +635,16 @@ async fn handle_chat(
         conv.get_api_messages()
     };
 
-    // Get tool definitions for the LLM
-    let tool_definitions = state.tools.definitions();
-    
-    info!("Starting agent loop with {} tools available", tool_definitions.len());
-    
+    // Get tool definitions based on session type
+    let tools = state.tools_for_session(session_type);
+    let tool_definitions = tools.definitions();
+
+    let session_label = match session_type {
+        SessionType::DirectMessage => "DM",
+        SessionType::Group => "Group",
+    };
+    info!("Starting agent loop ({}) with {} tools available", session_label, tool_definitions.len());
+
     // Maximum iterations to prevent infinite loops
     const MAX_ITERATIONS: u32 = 3;
     let mut iteration = 0;
@@ -413,7 +656,7 @@ async fn handle_chat(
     loop {
         iteration += 1;
         info!("Agent loop iteration {}/{}", iteration, MAX_ITERATIONS);
-        
+
         if iteration > MAX_ITERATIONS {
             warn!("Agent loop exceeded max iterations, using accumulated results");
             // Synthesize a response from what we have
@@ -425,7 +668,7 @@ async fn handle_chat(
 
         // If we've made too many tool calls, stop accepting more
         let use_tools = tool_calls_made < MAX_TOOL_CALLS;
-        
+
         // Call LLM with or without tools based on limits
         let response = if use_tools {
             state.llm_client
@@ -437,7 +680,7 @@ async fn handle_chat(
                 .chat(messages.clone(), GenerationOptions::balanced())
                 .await
         };
-        
+
         let response = match response {
             Ok(resp) => resp,
             Err(e) => {
@@ -459,7 +702,7 @@ async fn handle_chat(
         };
 
         let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
-        info!("LLM finish_reason: {}, has_content: {}, has_tool_calls: {}", 
+        info!("LLM finish_reason: {}, has_content: {}, has_tool_calls: {}",
             finish_reason,
             !choice.message.content.is_empty(),
             choice.message.tool_calls.is_some()
@@ -469,7 +712,7 @@ async fn handle_chat(
         if finish_reason == "stop" || finish_reason == "end_turn" {
             final_response = choice.message.content.clone();
             info!("LLM finished with reason: {}", finish_reason);
-            
+
             // Store assistant response
             {
                 let mut conversations = state.conversations.write().await;
@@ -488,16 +731,16 @@ async fn handle_chat(
             if let Some(tool_calls) = &choice.message.tool_calls {
                 if !tool_calls.is_empty() {
                     info!("LLM requested {} tool calls (total so far: {})", tool_calls.len(), tool_calls_made);
-                    
+
                     // Add the assistant message with tool calls to context
                     messages.push(choice.message.clone());
 
                     // Execute each tool call (limit to first 2 per iteration)
                     for tool_call in tool_calls.iter().take(2) {
                         tool_calls_made += 1;
-                        
+
                         let tool_name = &tool_call.function.name;
-                        
+
                         // Parse arguments
                         let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
                             Ok(v) => v,
@@ -507,20 +750,20 @@ async fn handle_chat(
                             }
                         };
 
-                        info!("Executing tool: {} (call #{}/{})", tool_name, tool_calls_made, MAX_TOOL_CALLS);
-                        
+                        info!("Executing tool: {} ({}) (call #{}/{})", tool_name, session_label, tool_calls_made, MAX_TOOL_CALLS);
+
                         // Show typing while executing tool
                         let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
 
-                        // Execute the tool
+                        // Execute the tool using session-appropriate registry
                         let call = ToolCall {
                             id: tool_call.id.clone(),
                             name: tool_name.clone(),
                             arguments: args,
                         };
-                        
-                        let result = state.tools.execute(&call).await;
-                        
+
+                        let result = tools.execute(&call).await;
+
                         let result_content = match result {
                             Ok(r) => {
                                 let s = r.to_string();
@@ -548,7 +791,7 @@ async fn handle_chat(
         if !choice.message.content.is_empty() {
             final_response = choice.message.content.clone();
             info!("LLM returned content without tool calls, treating as final");
-            
+
             // Store assistant response in conversation
             {
                 let mut conversations = state.conversations.write().await;
@@ -561,7 +804,7 @@ async fn handle_chat(
             }
             break;
         }
-        
+
         // Edge case: no content, no tool calls - this shouldn't happen often
         warn!("LLM returned empty response, finish_reason: {}", finish_reason);
         final_response = "I'm having trouble processing this request. Please try again.".to_string();

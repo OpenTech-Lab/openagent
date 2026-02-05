@@ -307,6 +307,97 @@ OpenAgent prioritizes the safety of your host machine. When the agent needs to r
 
 ---
 
+## 🔧 Built-in Agent Tools
+
+OpenAgent comes with several built-in tools that the AI agent can use to interact with the system:
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file contents from the workspace directory |
+| `write_file` | Write/create files in the workspace directory |
+| `system_command` | Execute OS commands (apt, mv, ls, cat, etc.) |
+| `duckduckgo_search` | Web search via DuckDuckGo (no API key required) |
+| `brave_search` | Web search via Brave API (requires `BRAVE_API_KEY`) |
+| `perplexity_search` | AI-powered search via Perplexity (requires `PERPLEXITY_API_KEY`) |
+
+### System Command Tool
+
+The `system_command` tool allows the agent to execute shell commands on the host OS:
+
+```json
+{
+  "command": "apt",
+  "args": ["update"]
+}
+```
+
+**Examples:**
+- `apt update` / `apt install <package>`
+- `mv old.txt new.txt`
+- `ls -la /path/to/dir`
+- `cat file.txt`
+- `mkdir -p /path/to/dir`
+
+**Security:**
+- Commands run with a configurable timeout (default: 60 seconds)
+- Working directory is restricted to the configured `ALLOWED_DIR`
+- Returns stdout, stderr, and exit code for transparency
+- **Default denylist:** `rm`, `sudo`, `su`, `chmod`, `chown`, `mkfs`, `dd`, `shutdown`, `reboot`, `kill`, etc.
+- **Shell injection protection:** Arguments are validated for dangerous characters (`;`, `|`, `` ` ``, `$(`, etc.)
+
+---
+
+## 🔐 OpenClaw-Style Security Features
+
+OpenAgent implements security patterns inspired by [OpenClaw](https://github.com/openclaw/openclaw):
+
+### Session-Based Sandboxing
+
+Different chat contexts have different permission levels:
+
+| Session Type | Tools Available | System Commands |
+|--------------|-----------------|-----------------|
+| **DM (Private Chat)** | Full access | All commands (except denylist) |
+| **Group Chat** | Sandboxed | Read-only: `ls`, `cat`, `head`, `tail`, `grep`, `find`, `echo`, `pwd`, `date` |
+
+This ensures that group chats (potentially untrusted) have restricted access, while private DMs with approved users get full functionality.
+
+### DM Pairing (User Approval)
+
+New users must be approved before they can interact with the bot via DM:
+
+1. **New user sends message** → Receives pairing code and user ID
+2. **Admin runs** `/pending` → Sees list of pending requests
+3. **Admin runs** `/approve <user_id>` → User is approved
+4. **User can now interact** with the bot
+
+**Admin Commands:**
+| Command | Description |
+|---------|-------------|
+| `/approve <user_id>` | Approve a user for DM access |
+| `/pending` | List pending pairing requests |
+
+**Notes:**
+- Users in `TELEGRAM_ALLOW_FROM` are automatically approved (admins)
+- Group chats don't require pairing (but have sandboxed tools)
+- Pairing state is stored in memory (resets on restart)
+
+### Tool Permissions
+
+The `SystemCommandTool` supports fine-grained control:
+
+```rust
+// Allow only specific commands
+SystemCommandTool::new()
+    .with_allowed_commands(vec!["ls", "cat", "echo"])
+
+// Block specific commands
+SystemCommandTool::new()
+    .with_denied_commands(vec!["rm", "sudo", "su"])
+```
+
+---
+
 ## 📂 Project Structure
 
 ```text

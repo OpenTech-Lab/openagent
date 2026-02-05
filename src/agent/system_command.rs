@@ -1,9 +1,11 @@
 //! System command execution tool
 //!
 //! Allows the agent to execute OS commands like `apt update`, `mv a b`, etc.
+//! Supports allowlist/denylist for security control.
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
@@ -14,12 +16,16 @@ use crate::error::Result;
 /// Tool for executing system commands
 ///
 /// This tool allows the agent to run OS commands with optional
-/// working directory restriction and timeout control.
+/// working directory restriction, timeout control, and command filtering.
 pub struct SystemCommandTool {
     /// Optional working directory for command execution
     working_dir: Option<PathBuf>,
     /// Command execution timeout in seconds
     timeout_secs: u64,
+    /// Allowlist of permitted commands (empty = allow all not in denylist)
+    allowed_commands: HashSet<String>,
+    /// Denylist of forbidden commands (checked first)
+    denied_commands: HashSet<String>,
 }
 
 impl Default for SystemCommandTool {
@@ -30,25 +36,94 @@ impl Default for SystemCommandTool {
 
 impl SystemCommandTool {
     /// Create a new SystemCommandTool with default settings
+    /// By default, dangerous commands are denied
     pub fn new() -> Self {
+        let mut denied = HashSet::new();
+        // Default denylist for dangerous commands
+        for cmd in &["rm", "sudo", "su", "chmod", "chown", "mkfs", "dd", "shutdown", "reboot", "init", "systemctl", "kill", "pkill", "killall"] {
+            denied.insert(cmd.to_string());
+        }
+
         SystemCommandTool {
             working_dir: None,
             timeout_secs: 60,
+            allowed_commands: HashSet::new(),
+            denied_commands: denied,
         }
     }
 
     /// Create with a specific working directory
     pub fn with_working_dir(working_dir: PathBuf) -> Self {
-        SystemCommandTool {
-            working_dir: Some(working_dir),
-            timeout_secs: 60,
-        }
+        let mut tool = Self::new();
+        tool.working_dir = Some(working_dir);
+        tool
     }
 
     /// Set the timeout in seconds
     pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
         self.timeout_secs = timeout_secs;
         self
+    }
+
+    /// Set allowed commands (whitelist)
+    /// When set, only these commands can be executed
+    pub fn with_allowed_commands(mut self, commands: Vec<String>) -> Self {
+        self.allowed_commands = commands.into_iter().collect();
+        self
+    }
+
+    /// Set denied commands (blacklist)
+    /// These commands are always blocked
+    pub fn with_denied_commands(mut self, commands: Vec<String>) -> Self {
+        self.denied_commands = commands.into_iter().collect();
+        self
+    }
+
+    /// Add a command to the allowlist
+    pub fn allow_command(mut self, command: impl Into<String>) -> Self {
+        self.allowed_commands.insert(command.into());
+        self
+    }
+
+    /// Add a command to the denylist
+    pub fn deny_command(mut self, command: impl Into<String>) -> Self {
+        self.denied_commands.insert(command.into());
+        self
+    }
+
+    /// Clear the default denylist (use with caution!)
+    pub fn clear_denylist(mut self) -> Self {
+        self.denied_commands.clear();
+        self
+    }
+
+    /// Check if a command is allowed
+    fn is_command_allowed(&self, command: &str) -> bool {
+        // Extract base command (handle paths like /usr/bin/ls)
+        let base_cmd = command.rsplit('/').next().unwrap_or(command);
+
+        // Check denylist first (always takes precedence)
+        if self.denied_commands.contains(base_cmd) {
+            return false;
+        }
+
+        // If allowlist is empty, allow all (that aren't denied)
+        if self.allowed_commands.is_empty() {
+            return true;
+        }
+
+        // Check allowlist
+        self.allowed_commands.contains(base_cmd)
+    }
+
+    /// Get list of denied commands (for error messages)
+    pub fn denied_commands_list(&self) -> Vec<&str> {
+        self.denied_commands.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// Get list of allowed commands (for error messages)
+    pub fn allowed_commands_list(&self) -> Vec<&str> {
+        self.allowed_commands.iter().map(|s| s.as_str()).collect()
     }
 }
 
@@ -59,7 +134,7 @@ impl Tool for SystemCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a system/shell command on the OS. Can run commands like 'apt update', 'mv a b', 'ls -la', 'cat file.txt', etc. Returns stdout, stderr, and exit code."
+        "Execute a system/shell command on the OS. Can run commands like 'apt update', 'mv a b', 'ls -la', 'cat file.txt', etc. Returns stdout, stderr, and exit code. Some dangerous commands may be blocked."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -91,6 +166,15 @@ impl Tool for SystemCommandTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| crate::Error::InvalidInput("Missing 'command' parameter".to_string()))?;
 
+        // Check if command is allowed
+        if !self.is_command_allowed(command) {
+            return Ok(ToolResult::failure(format!(
+                "Command '{}' is not allowed. Denied commands: {:?}",
+                command,
+                self.denied_commands_list()
+            )));
+        }
+
         // Parse arguments (optional)
         let cmd_args: Vec<String> = args
             .get("args")
@@ -101,6 +185,18 @@ impl Tool for SystemCommandTool {
                     .collect()
             })
             .unwrap_or_default();
+
+        // Security: Check for dangerous patterns in arguments
+        for arg in &cmd_args {
+            // Block shell injection attempts
+            if arg.contains(';') || arg.contains('|') || arg.contains('`')
+                || arg.contains("$(") || arg.contains("&&") || arg.contains("||") {
+                return Ok(ToolResult::failure(format!(
+                    "Argument '{}' contains potentially dangerous shell characters",
+                    arg
+                )));
+            }
+        }
 
         // Parse working directory (optional, can override instance default)
         let working_dir = args
@@ -212,6 +308,66 @@ mod tests {
 
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_system_command_denied() {
+        let tool = SystemCommandTool::new();
+        let args = serde_json::json!({
+            "command": "rm",
+            "args": ["-rf", "/"]
+        });
+
+        let result = tool.execute(args).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("not allowed"));
+    }
+
+    #[tokio::test]
+    async fn test_system_command_sudo_denied() {
+        let tool = SystemCommandTool::new();
+        let args = serde_json::json!({
+            "command": "sudo",
+            "args": ["apt", "update"]
+        });
+
+        let result = tool.execute(args).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("not allowed"));
+    }
+
+    #[tokio::test]
+    async fn test_system_command_allowlist() {
+        let tool = SystemCommandTool::new()
+            .with_allowed_commands(vec!["echo".to_string(), "cat".to_string()]);
+
+        // Allowed command should work
+        let args = serde_json::json!({
+            "command": "echo",
+            "args": ["test"]
+        });
+        let result = tool.execute(args).await.unwrap();
+        assert!(result.success);
+
+        // Non-allowed command should fail
+        let args = serde_json::json!({
+            "command": "ls"
+        });
+        let result = tool.execute(args).await.unwrap();
+        assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn test_system_command_shell_injection_blocked() {
+        let tool = SystemCommandTool::new();
+        let args = serde_json::json!({
+            "command": "echo",
+            "args": ["hello; rm -rf /"]
+        });
+
+        let result = tool.execute(args).await.unwrap();
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("dangerous"));
     }
 
     #[tokio::test]
