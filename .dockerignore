@@ -1,0 +1,41 @@
+# Build artifacts
+target/
+*.rs.bk
+
+# Node modules (if any)
+node_modules/
+.pnpm-store/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Environment files (will be mounted separately)
+.env
+
+# Documentation
+docs/
+*.md
+!SOUL.md
+
+# Lock files (keep Cargo.lock for reproducible builds)
+pnpm-lock.yaml
+package-lock.json
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Test artifacts
+*.profraw
+coverage/
+
+# Workspace data (will be mounted)
+workspace/

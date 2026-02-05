@@ -22,14 +22,97 @@
 
 ## 🚀 Quick Start
 
-### 1. Clone & Install
+### Option A: Docker (Recommended)
+
+The fastest way to get started - no Rust toolchain or pnpm required:
 
 ```bash
 git clone https://github.com/OpenTech-Lab/openagent.git
 cd openagent
 
-# Install pnpm(option)
-https://pnpm.io/installation
+# One-command setup (builds, starts databases, runs onboarding)
+./docker-setup.sh
+```
+
+#### Multi-Agent Support
+
+Create multiple isolated agents, each with their own databases, memory, and personality:
+
+```bash
+# Create agent "alice"
+./docker-setup.sh alice
+
+# Create another agent "bob"  
+./docker-setup.sh bob
+
+# Each agent has isolated:
+# • PostgreSQL database (separate memory/records)
+# • OpenSearch index (separate search history)
+# • Workspace directory (.agents/<name>/workspace)
+# • SOUL.md personality file (.agents/<name>/SOUL.md)
+# • Environment config (.agents/<name>/.env)
+
+# List all agents
+./docker-setup.sh --list
+
+# Start specific agent
+./docker-setup.sh alice --start
+
+# Chat with specific agent
+./docker-setup.sh alice --cli chat
+
+# Stop specific agent
+./docker-setup.sh alice --stop
+
+# Remove agent and all its data
+./docker-setup.sh alice --clean
+```
+
+**Manual Docker commands:**
+```bash
+# Build images
+docker compose build
+
+# Run the onboarding wizard
+docker compose run --rm openagent-cli onboard
+
+# Start the gateway
+docker compose up -d openagent-gateway
+
+# Run interactive chat
+docker compose run --rm openagent-cli chat
+
+# Check status
+docker compose run --rm openagent-cli status
+
+# View logs
+docker compose logs -f
+```
+
+**Docker Setup Script Options:**
+```bash
+./docker-setup.sh [agent-name]              # Full setup with onboarding
+./docker-setup.sh [agent-name] --build      # Build images only
+./docker-setup.sh [agent-name] --start      # Start all services
+./docker-setup.sh [agent-name] --stop       # Stop all services
+./docker-setup.sh [agent-name] --clean      # Remove all containers and data
+./docker-setup.sh [agent-name] --cli chat   # Run CLI commands
+./docker-setup.sh [agent-name] --status     # Show service status
+./docker-setup.sh --list                    # List all agents
+```
+
+---
+
+### Option B: Local Development (pnpm + Rust)
+
+For development or if you prefer a local setup:
+
+```bash
+git clone https://github.com/OpenTech-Lab/openagent.git
+cd openagent
+
+# Install pnpm (optional)
+# https://pnpm.io/installation
 
 # Install dependencies (Rust toolchain & pnpm packages)
 pnpm install
@@ -38,7 +121,7 @@ pnpm install
 pnpm build
 ```
 
-### 2. Interactive Setup Wizard
+#### Interactive Setup Wizard
 
 Run the interactive onboarding wizard with arrow-key navigation:
 
@@ -54,13 +137,13 @@ The wizard will:
 - ✅ Configure sandbox execution environment
 - ✅ Run database migrations automatically
 
-### 3. Start the Gateway
+#### Start the Gateway
 
 ```bash
 pnpm dev
 ```
 
-### 4. (Optional) Interactive Main Menu
+#### (Optional) Interactive Main Menu
 
 Run OpenAgent without arguments for a beautiful interactive menu:
 
@@ -219,6 +302,9 @@ OpenAgent prioritizes the safety of your host machine. When the agent needs to r
 
 ```text
 .
+├── docker-setup.sh       # 🐳 Quick start script for Docker
+├── docker-compose.yml    # 🐳 Docker services configuration
+├── Dockerfile            # 🐳 Multi-stage build for production
 ├── src/
 │   ├── bin/              # Binary entry points: gateway & cli
 │   ├── core/             # ✨ Core trait abstractions (NEW)

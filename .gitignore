@@ -11,6 +11,9 @@ release/
 .env.local
 .env.*.local
 
+# Agent instances (Docker multi-agent)
+.agents/
+
 # IDE and editor files
 .idea/
 .vscode/

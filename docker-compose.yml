@@ -1,0 +1,126 @@
+# ==============================================================================
+# OpenAgent Docker Compose Configuration
+# ==============================================================================
+# Quick start: ./docker-setup.sh
+# Manual: docker compose run --rm openagent-cli onboard
+# ==============================================================================
+
+services:
+  # ============================================================================
+  # OpenAgent CLI - Interactive command-line interface
+  # ============================================================================
+  openagent-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: openagent-cli
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SOUL.md:/app/SOUL.md
+      - ./workspace:/app/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,openagent=debug}
+      - DATABASE_URL=postgres://openagent:openagent@openagent-postgres:5432/openagent
+      - OPENSEARCH_URL=http://openagent-opensearch:9200
+    depends_on:
+      openagent-postgres:
+        condition: service_healthy
+      openagent-opensearch:
+        condition: service_healthy
+    networks:
+      - openagent-network
+
+  # ============================================================================
+  # OpenAgent Gateway - WebSocket/HTTP API server
+  # ============================================================================
+  openagent-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: gateway
+    container_name: openagent-gateway
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SOUL.md:/app/SOUL.md
+      - ./workspace:/app/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,openagent=debug}
+      - DATABASE_URL=postgres://openagent:openagent@openagent-postgres:5432/openagent
+      - OPENSEARCH_URL=http://openagent-opensearch:9200
+    depends_on:
+      openagent-postgres:
+        condition: service_healthy
+      openagent-opensearch:
+        condition: service_healthy
+    networks:
+      - openagent-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgreSQL with pgvector extension
+  # ============================================================================
+  openagent-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: openagent-postgres
+    environment:
+      POSTGRES_USER: openagent
+      POSTGRES_PASSWORD: openagent
+      POSTGRES_DB: openagent
+    volumes:
+      - openagent-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openagent -d openagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - openagent-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # OpenSearch for full-text search
+  # ============================================================================
+  openagent-opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: openagent-opensearch
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=OpenAgent123!
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - openagent-opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+      - "${OPENSEARCH_PERF_PORT:-9600}:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - openagent-network
+    restart: unless-stopped
+
+# ==============================================================================
+# Networks
+# ==============================================================================
+networks:
+  openagent-network:
+    driver: bridge
+
+# ==============================================================================
+# Volumes
+# ==============================================================================
+volumes:
+  openagent-postgres-data:
+  openagent-opensearch-data:
