@@ -145,10 +145,19 @@ async fn main() -> Result<()> {
 
     // Get telegram config (optional)
     let telegram_config = match config.channels.telegram.as_ref() {
-        Some(cfg) if !cfg.bot_token.expose_secret().is_empty() => Some(cfg),
-        Some(_) => {
-            warn!("TELEGRAM_BOT_TOKEN is empty, Telegram bot will not start");
-            None
+        Some(cfg) => {
+            let token = cfg.bot_token.expose_secret();
+            // Check for empty or placeholder tokens
+            if token.is_empty() {
+                warn!("TELEGRAM_BOT_TOKEN is empty, Telegram bot will not start");
+                None
+            } else if token.contains("your") || token.len() < 20 {
+                warn!("TELEGRAM_BOT_TOKEN appears to be a placeholder, Telegram bot will not start");
+                warn!("Get a real token from @BotFather on Telegram");
+                None
+            } else {
+                Some(cfg)
+            }
         }
         None => {
             warn!("Telegram not configured, Telegram bot will not start");
@@ -173,29 +182,41 @@ async fn main() -> Result<()> {
     );
 
     // Start Telegram bot if configured
+    let mut telegram_started = false;
     if let Some(telegram_config) = telegram_config {
         // Create bot
         let bot = Bot::new(telegram_config.bot_token.expose_secret());
 
-        // Get bot info
-        let me = bot.get_me().await.map_err(|e| Error::Telegram(e.to_string()))?;
-        info!("Bot started: @{}", me.username.as_deref().unwrap_or("unknown"));
+        // Try to get bot info - if this fails, the token is invalid
+        match bot.get_me().await {
+            Ok(me) => {
+                info!("Telegram bot started: @{}", me.username.as_deref().unwrap_or("unknown"));
+                telegram_started = true;
 
-        // Start dispatcher
-        let handler = dptree::entry()
-            .branch(Update::filter_message().endpoint(message_handler));
+                // Start dispatcher
+                let handler = dptree::entry()
+                    .branch(Update::filter_message().endpoint(message_handler));
 
-        Dispatcher::builder(bot, handler)
-            .dependencies(dptree::deps![state])
-            .enable_ctrlc_handler()
-            .build()
-            .dispatch()
-            .await;
-    } else {
-        info!("No channels configured. Gateway running in standby mode.");
+                Dispatcher::builder(bot, handler)
+                    .dependencies(dptree::deps![state])
+                    .enable_ctrlc_handler()
+                    .build()
+                    .dispatch()
+                    .await;
+            }
+            Err(e) => {
+                error!("Failed to start Telegram bot: {}", e);
+                warn!("Check your TELEGRAM_BOT_TOKEN - it may be invalid or revoked");
+                warn!("Gateway will continue in standby mode without Telegram");
+            }
+        }
+    }
+
+    if !telegram_started {
+        info!("No channels active. Gateway running in standby mode.");
         info!("Configure TELEGRAM_BOT_TOKEN to enable Telegram bot.");
         info!("Press Ctrl+C to exit.");
-        
+
         // Wait for shutdown signal
         tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
     }
