@@ -28,7 +28,11 @@ RUN cargo build --release && rm -rf src target/release/deps/openagent*
 
 # Copy actual source code
 COPY src ./src
-COPY migrations ./migrations
+
+# Copy migrations if they exist (create empty dir if not)
+RUN mkdir -p migrations
+COPY migrations/ ./migrations/
+
 COPY SOUL.md ./
 
 # Build the actual binaries
