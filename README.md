@@ -55,14 +55,14 @@ Create multiple isolated agents, each with their own databases, memory, and pers
 # List all agents
 ./docker-setup.sh --list
 
+# onboard agent
+./docker-setup.sh alice --cli onboard
+
 # Start specific agent
 ./docker-setup.sh alice --start
 
 # Chat with specific agent
 ./docker-setup.sh alice --cli chat
-
-# onboard agent
-./docker-setup.sh alice --cli onboard
 
 # Stop specific agent
 ./docker-setup.sh alice --stop

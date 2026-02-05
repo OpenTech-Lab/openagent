@@ -198,7 +198,7 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./.env:/app/.env:ro
+      - ./.env:/app/.env
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
       - /var/run/docker.sock:/var/run/docker.sock
@@ -680,17 +680,32 @@ main() {
     print_banner
     check_docker
     check_compose
-    
-    # Initialize agent if name provided
+
+    # Check if agent exists for actions that require it
     if [ -n "$AGENT_NAME" ]; then
         local agent_dir=$(get_agent_dir)
-        if [ ! -d "$agent_dir" ]; then
-            init_agent
-        else
-            info "Using existing agent '${AGENT_NAME}' at ${agent_dir}"
-        fi
+        case "$action" in
+            start|stop|clean|status|cli|build)
+                # These actions require the agent to already exist
+                if [ ! -d "$agent_dir" ]; then
+                    error "Agent '${AGENT_NAME}' does not exist"
+                    echo "   Create it first with: ./docker-setup.sh ${AGENT_NAME}"
+                    echo "   Or list existing agents: ./docker-setup.sh --list"
+                    exit 1
+                fi
+                info "Using existing agent '${AGENT_NAME}' at ${agent_dir}"
+                ;;
+            "")
+                # Full setup - create agent if it doesn't exist
+                if [ ! -d "$agent_dir" ]; then
+                    init_agent
+                else
+                    info "Using existing agent '${AGENT_NAME}' at ${agent_dir}"
+                fi
+                ;;
+        esac
     fi
-    
+
     case "$action" in
         build)
             build_images

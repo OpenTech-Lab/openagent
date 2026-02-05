@@ -1143,14 +1143,21 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // =========================================================================
     print_section("Saving Configuration");
 
-    // Skip saving if running in Docker with pre-configured databases (read-only filesystem)
+    // Always try to save the .env file (needed for Telegram token, etc.)
     let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
-    if databases_preconfigured {
-        println!("   ℹ️  Running in Docker - configuration via environment variables");
-        println!("   ✅ Configuration verified");
-    } else {
-        write_env_file(env_path, &env_vars)?;
-        println!("   ✅ Configuration saved to .env");
+    match write_env_file(env_path, &env_vars) {
+        Ok(_) => {
+            println!("   ✅ Configuration saved to .env");
+        }
+        Err(e) => {
+            if databases_preconfigured {
+                // In Docker with read-only .env, this is expected
+                println!("   ℹ️  Could not save .env (read-only): {}", e);
+                println!("   ⚠️  Edit .env on the host to configure Telegram token");
+            } else {
+                return Err(e);
+            }
+        }
     }
 
     // =========================================================================
@@ -1158,10 +1165,9 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // =========================================================================
     print_section("Verifying Configuration");
 
-    // Reload env vars for verification (skip if running with pre-configured DBs)
-    if !databases_preconfigured {
-        dotenvy::from_path(env_path).ok();
-    }
+    // Always reload env vars for verification to pick up newly saved values
+    // Use override mode to ensure new values take precedence over existing env vars
+    dotenvy::from_path_override(env_path).ok();
 
     // Test OpenRouter
     print!("   Checking OpenRouter... ");
