@@ -187,6 +187,8 @@ fn read_env_file(path: &Path) -> Result<HashMap<String, String>> {
 
 /// Write .env file with comments preserved where possible
 fn write_env_file(path: &Path, vars: &HashMap<String, String>) -> Result<()> {
+    use std::io::Write;
+
     let template = include_str!("../../.env.example");
     let mut output = String::new();
     let mut written_keys = std::collections::HashSet::new();
@@ -228,7 +230,12 @@ fn write_env_file(path: &Path, vars: &HashMap<String, String>) -> Result<()> {
         }
     }
 
-    std::fs::write(path, output)?;
+    // Write with explicit sync to ensure data is flushed to disk
+    // This is important for Docker bind mounts where writes may not be immediately visible
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(output.as_bytes())?;
+    file.sync_all()?;
+
     Ok(())
 }
 
@@ -1145,9 +1152,37 @@ async fn onboard(install_daemon: bool) -> Result<()> {
 
     // Always try to save the .env file (needed for Telegram token, etc.)
     let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
+    let mut save_succeeded = false;
     match write_env_file(env_path, &env_vars) {
         Ok(_) => {
-            println!("   ✅ Configuration saved to .env");
+            // Verify the write actually persisted by re-reading the file
+            match read_env_file(env_path) {
+                Ok(saved_vars) => {
+                    // Check critical values were saved
+                    let telegram_saved = saved_vars.get("TELEGRAM_BOT_TOKEN") == env_vars.get("TELEGRAM_BOT_TOKEN");
+                    let openrouter_saved = saved_vars.get("OPENROUTER_API_KEY") == env_vars.get("OPENROUTER_API_KEY");
+
+                    if telegram_saved && openrouter_saved {
+                        println!("   ✅ Configuration saved to .env");
+                        save_succeeded = true;
+                    } else {
+                        println!("   ⚠️  Configuration may not have been saved correctly");
+                        if !telegram_saved && !telegram_token.is_empty() {
+                            println!("   ⚠️  Telegram token was not persisted");
+                        }
+                        if !openrouter_saved && !openrouter_key.is_empty() {
+                            println!("   ⚠️  OpenRouter API key was not persisted");
+                        }
+                        if databases_preconfigured {
+                            println!("   ℹ️  Edit .env on the host machine to add your API keys");
+                        }
+                    }
+                }
+                Err(_) => {
+                    println!("   ⚠️  Could not verify saved configuration");
+                    save_succeeded = true; // Assume it worked
+                }
+            }
         }
         Err(e) => {
             if databases_preconfigured {
@@ -1160,6 +1195,21 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         }
     }
 
+    // If save didn't succeed in Docker, show the values to copy manually
+    if !save_succeeded && databases_preconfigured {
+        println!();
+        println!("   To configure manually, add these to your .env file on the host:");
+        if !telegram_token.is_empty() {
+            println!("   TELEGRAM_BOT_TOKEN={}", telegram_token);
+        }
+        if !openrouter_key.is_empty() {
+            let masked = format!("{}...{}", &openrouter_key[..8.min(openrouter_key.len())],
+                                &openrouter_key[openrouter_key.len().saturating_sub(4)..]);
+            println!("   OPENROUTER_API_KEY={} (masked)", masked);
+        }
+        println!();
+    }
+
     // =========================================================================
     // Verify Configuration
     // =========================================================================
@@ -1168,6 +1218,15 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // Always reload env vars for verification to pick up newly saved values
     // Use override mode to ensure new values take precedence over existing env vars
     dotenvy::from_path_override(env_path).ok();
+
+    // Also explicitly set env vars from our collected values to ensure verification works
+    // This handles cases where the .env file write didn't persist (e.g., Docker bind mount issues)
+    if !telegram_token.is_empty() {
+        std::env::set_var("TELEGRAM_BOT_TOKEN", &telegram_token);
+    }
+    if !openrouter_key.is_empty() {
+        std::env::set_var("OPENROUTER_API_KEY", &openrouter_key);
+    }
 
     // Test OpenRouter
     print!("   Checking OpenRouter... ");

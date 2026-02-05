@@ -76,6 +76,9 @@ Create multiple isolated agents, each with their own databases, memory, and pers
 # Build images
 docker compose build
 
+# Re-build images
+docker compose build --no-cache
+
 # Run the onboarding wizard
 docker compose run --rm openagent-cli onboard
 
