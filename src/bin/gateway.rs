@@ -3,8 +3,10 @@
 //! The main entry point for the Telegram bot interface.
 
 use openagent::agent::{
-    ConversationManager, GenerationOptions, OpenRouterClient,
-    ToolRegistry, ReadFileTool, WriteFileTool, prompts::DEFAULT_SYSTEM_PROMPT,
+    ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
+    ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, 
+    DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
+    prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use openagent::config::Config;
 use openagent::database::{init_pool, MemoryStore, OpenSearchClient};
@@ -14,7 +16,7 @@ use openagent::{Error, Result};
 use secrecy::ExposeSecret;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{Message, ParseMode};
+use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -98,6 +100,21 @@ impl AppState {
         let mut tools = ToolRegistry::new();
         tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
         tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
+        
+        // Register web search tools (DuckDuckGo is always available, no API key needed)
+        tools.register(DuckDuckGoSearchTool::new());
+        
+        // Register Brave if API key available
+        if let Some(brave) = BraveSearchTool::from_env() {
+            info!("Brave Search enabled");
+            tools.register(brave);
+        }
+        
+        // Register Perplexity if API key available
+        if let Some(perplexity) = PerplexitySearchTool::from_env() {
+            info!("Perplexity Search enabled");
+            tools.register(perplexity);
+        }
 
         Ok(AppState {
             config,
@@ -334,7 +351,7 @@ async fn handle_command(
     Ok(())
 }
 
-/// Handle regular chat messages
+/// Handle regular chat messages - AGENTIC LOOP
 async fn handle_chat(
     bot: Bot,
     msg: Message,
@@ -348,44 +365,188 @@ async fn handle_chat(
     bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
         .await?;
 
-    // Get or create conversation
-    let messages = {
+    // Get or create conversation and add user message
+    let mut messages = {
         let mut conversations = state.conversations.write().await;
         let conv = conversations.get_or_create(user_id);
         conv.add_user_message(text);
         conv.get_api_messages()
     };
 
-    // Generate response
-    match state
-        .llm_client
-        .chat(messages, GenerationOptions::balanced())
-        .await
-    {
-        Ok(response) => {
-            if let Some(choice) = response.choices.first() {
-                let reply = &choice.message.content;
+    // Get tool definitions for the LLM
+    let tool_definitions = state.tools.definitions();
+    
+    info!("Starting agent loop with {} tools available", tool_definitions.len());
+    
+    // Maximum iterations to prevent infinite loops
+    const MAX_ITERATIONS: u32 = 3;
+    let mut iteration = 0;
+    let mut final_response = String::new();
+    let mut tool_calls_made = 0u32;
+    const MAX_TOOL_CALLS: u32 = 3;
 
-                // Store assistant response
-                {
-                    let mut conversations = state.conversations.write().await;
-                    if let Some(conv) = conversations.get_mut(user_id) {
-                        conv.add_assistant_message(reply);
-                        if let Some(usage) = &response.usage {
-                            conv.total_tokens += usage.total_tokens;
-                        }
+    // Agentic loop: keep running until LLM stops calling tools
+    loop {
+        iteration += 1;
+        info!("Agent loop iteration {}/{}", iteration, MAX_ITERATIONS);
+        
+        if iteration > MAX_ITERATIONS {
+            warn!("Agent loop exceeded max iterations, using accumulated results");
+            // Synthesize a response from what we have
+            if final_response.is_empty() {
+                final_response = "I searched for information but couldn't find specific results. Please try a more specific query.".to_string();
+            }
+            break;
+        }
+
+        // If we've made too many tool calls, stop accepting more
+        let use_tools = tool_calls_made < MAX_TOOL_CALLS;
+        
+        // Call LLM with or without tools based on limits
+        let response = if use_tools {
+            state.llm_client
+                .chat_with_tools(messages.clone(), tool_definitions.clone(), GenerationOptions::balanced())
+                .await
+        } else {
+            // Force no tools - just get a response
+            state.llm_client
+                .chat(messages.clone(), GenerationOptions::balanced())
+                .await
+        };
+        
+        let response = match response {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("LLM error: {}", e);
+                bot.send_message(chat_id, format!("❌ Error: {}", e))
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        // Get the first choice
+        let choice = match response.choices.first() {
+            Some(c) => c,
+            None => {
+                bot.send_message(chat_id, "❌ No response from LLM")
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+        info!("LLM finish_reason: {}, has_content: {}, has_tool_calls: {}", 
+            finish_reason,
+            !choice.message.content.is_empty(),
+            choice.message.tool_calls.is_some()
+        );
+
+        // Check finish reason - if "stop" or "end_turn", we're done
+        if finish_reason == "stop" || finish_reason == "end_turn" {
+            final_response = choice.message.content.clone();
+            info!("LLM finished with reason: {}", finish_reason);
+            
+            // Store assistant response
+            {
+                let mut conversations = state.conversations.write().await;
+                if let Some(conv) = conversations.get_mut(user_id) {
+                    conv.add_assistant_message(&final_response);
+                    if let Some(usage) = &response.usage {
+                        conv.total_tokens += usage.total_tokens;
                     }
                 }
+            }
+            break;
+        }
 
-                // Send response (split if too long)
-                send_long_message(&bot, chat_id, reply).await?;
+        // Check if there are tool calls (and we haven't hit the limit)
+        if use_tools {
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                if !tool_calls.is_empty() {
+                    info!("LLM requested {} tool calls (total so far: {})", tool_calls.len(), tool_calls_made);
+                    
+                    // Add the assistant message with tool calls to context
+                    messages.push(choice.message.clone());
+
+                    // Execute each tool call (limit to first 2 per iteration)
+                    for tool_call in tool_calls.iter().take(2) {
+                        tool_calls_made += 1;
+                        
+                        let tool_name = &tool_call.function.name;
+                        
+                        // Parse arguments
+                        let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                warn!("Failed to parse tool arguments for {}: {}", tool_name, e);
+                                serde_json::json!({})
+                            }
+                        };
+
+                        info!("Executing tool: {} (call #{}/{})", tool_name, tool_calls_made, MAX_TOOL_CALLS);
+                        
+                        // Show typing while executing tool
+                        let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
+
+                        // Execute the tool
+                        let call = ToolCall {
+                            id: tool_call.id.clone(),
+                            name: tool_name.clone(),
+                            arguments: args,
+                        };
+                        
+                        let result = state.tools.execute(&call).await;
+                        
+                        let result_content = match result {
+                            Ok(r) => {
+                                let s = r.to_string();
+                                info!("Tool {} succeeded, result length: {} chars", tool_name, s.len());
+                                s
+                            },
+                            Err(e) => {
+                                let err = format!("Tool error: {}", e);
+                                warn!("Tool {} failed: {}", tool_name, err);
+                                err
+                            }
+                        };
+
+                        // Add tool result to messages
+                        messages.push(AgentMessage::tool(&tool_call.id, &result_content));
+                    }
+
+                    // Continue loop - LLM will process tool results
+                    continue;
+                }
             }
         }
-        Err(e) => {
-            error!("LLM error: {}", e);
-            bot.send_message(chat_id, format!("❌ Error: {}", e))
-                .await?;
+
+        // No tool calls (or tools disabled) - treat content as final response
+        if !choice.message.content.is_empty() {
+            final_response = choice.message.content.clone();
+            info!("LLM returned content without tool calls, treating as final");
+            
+            // Store assistant response in conversation
+            {
+                let mut conversations = state.conversations.write().await;
+                if let Some(conv) = conversations.get_mut(user_id) {
+                    conv.add_assistant_message(&final_response);
+                    if let Some(usage) = &response.usage {
+                        conv.total_tokens += usage.total_tokens;
+                    }
+                }
+            }
+            break;
         }
+        
+        // Edge case: no content, no tool calls - this shouldn't happen often
+        warn!("LLM returned empty response, finish_reason: {}", finish_reason);
+        final_response = "I'm having trouble processing this request. Please try again.".to_string();
+        break;
+    }
+
+    // Send response (split if too long)
+    if !final_response.is_empty() {
+        send_long_message(&bot, chat_id, &final_response).await?;
     }
 
     Ok(())
