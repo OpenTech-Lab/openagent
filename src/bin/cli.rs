@@ -938,6 +938,26 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     println!("   OpenSearch enables full-text search across conversations.");
     println!();
 
+    // Check if databases are already configured via environment (e.g., running in Docker)
+    let env_database_url = std::env::var("DATABASE_URL").ok();
+    let env_opensearch_url = std::env::var("OPENSEARCH_URL").ok();
+
+    let postgres_started = if env_database_url.is_some() && env_opensearch_url.is_some() {
+        println!("   {} Databases pre-configured via environment variables", style("✅").green());
+        if let Some(ref db_url) = env_database_url {
+            // Mask the password in the URL for display
+            let masked = db_url.split('@').last().unwrap_or(db_url);
+            println!("   PostgreSQL: ...@{}", masked);
+            env_vars.insert("DATABASE_URL".to_string(), db_url.clone());
+        }
+        if let Some(ref os_url) = env_opensearch_url {
+            println!("   OpenSearch: {}", os_url);
+            env_vars.insert("OPENSEARCH_URL".to_string(), os_url.clone());
+        }
+        println!();
+        println!("   Skipping database configuration (already set).");
+        true // Databases are configured
+    } else {
     // Check if Docker is available
     let docker_available = is_docker_available();
     if docker_available {
@@ -960,7 +980,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
 
     let db_choice = prompt_menu("PostgreSQL setup:", &db_options.iter().map(|s| *s).collect::<Vec<_>>(), 0)?;
 
-    let postgres_started = if docker_available {
+    let pg_started = if docker_available {
         match db_choice {
             0 => {
                 // Auto-start with Docker
@@ -1053,6 +1073,8 @@ async fn onboard(install_daemon: bool) -> Result<()> {
             }
         }
     };
+    pg_started // return postgres status from else block
+    }; // end of else block for pre-configured databases
 
     // Run migrations if PostgreSQL was configured
     if postgres_started {
@@ -1060,10 +1082,13 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         if prompt_yes_no("   Run database migrations now?", true)? {
             print!("   Running migrations... ");
             io::stdout().flush()?;
-            // Save config first so migrations can read it
-            write_env_file(env_path, &env_vars)?;
-            dotenvy::from_path(env_path).ok();
-            
+            // Save config first so migrations can read it (skip if running in Docker with pre-configured DBs)
+            let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
+            if !databases_preconfigured {
+                write_env_file(env_path, &env_vars)?;
+                dotenvy::from_path(env_path).ok();
+            }
+
             match run_migrations_internal().await {
                 Ok(_) => println!("✅"),
                 Err(e) => println!("❌ {}", e),
@@ -1118,16 +1143,25 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // =========================================================================
     print_section("Saving Configuration");
 
-    write_env_file(env_path, &env_vars)?;
-    println!("   ✅ Configuration saved to .env");
+    // Skip saving if running in Docker with pre-configured databases (read-only filesystem)
+    let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
+    if databases_preconfigured {
+        println!("   ℹ️  Running in Docker - configuration via environment variables");
+        println!("   ✅ Configuration verified");
+    } else {
+        write_env_file(env_path, &env_vars)?;
+        println!("   ✅ Configuration saved to .env");
+    }
 
     // =========================================================================
     // Verify Configuration
     // =========================================================================
     print_section("Verifying Configuration");
 
-    // Reload env vars for verification
-    dotenvy::from_path(env_path).ok();
+    // Reload env vars for verification (skip if running with pre-configured DBs)
+    if !databases_preconfigured {
+        dotenvy::from_path(env_path).ok();
+    }
 
     // Test OpenRouter
     print!("   Checking OpenRouter... ");
