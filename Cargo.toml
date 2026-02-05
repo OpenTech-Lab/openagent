@@ -104,6 +104,9 @@ dirs = "6.0"
 humantime-serde = "1.1"
 rand = "0.9.2"
 
+# Pin time to avoid time-macros 0.2.26 which requires edition 2024
+time = ">=0.3.17, <0.3.37"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"
