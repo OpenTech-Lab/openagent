@@ -217,22 +217,98 @@ OpenAgent prioritizes the safety of your host machine. When the agent needs to r
 ```text
 .
 ├── src/
-│   ├── bin/           # Binary entry points: gateway (Telegram) & cli
-│   ├── agent/         # LLM logic, Prompt Engineering, Soul, & OpenRouter client
-│   ├── database/      # PostgreSQL and OpenSearch logic
-│   └── sandbox/       # Security abstraction layers (OS/Wasm/Docker)
-├── docs/              # Design documentation
-├── SOUL.md            # Agent personality configuration
-├── Cargo.toml         # Rust dependencies
-└── package.json       # pnpm scripts for developer workflow
+│   ├── bin/              # Binary entry points: gateway & cli
+│   ├── core/             # ✨ Core trait abstractions (NEW)
+│   │   ├── mod.rs        #    LlmProvider, Channel, StorageBackend, CodeExecutor
+│   │   └── traits.rs     #    Modular interfaces for loose coupling
+│   ├── agent/            # LLM logic, conversation, tools
+│   ├── config/           # ✨ Modular configuration (NEW)
+│   │   ├── types/        #    Provider, Channel, Storage, Sandbox configs
+│   │   ├── validation.rs #    Configuration validation
+│   │   └── paths.rs      #    Standard directory paths
+│   ├── database/         # PostgreSQL, OpenSearch, SQLite backends
+│   ├── sandbox/          # Multi-tier execution (OS/Wasm/Container)
+│   ├── plugin_sdk/       # ✨ Plugin SDK for extensions (NEW)
+│   │   ├── traits.rs     #    Plugin trait definition
+│   │   ├── manifest.rs   #    Plugin metadata
+│   │   └── registry.rs   #    Dynamic plugin loading
+│   └── gateway/          # ✨ WebSocket protocol (NEW)
+│       └── protocol/     #    JSON-RPC style messaging
+├── docs/                 # Design documentation
+├── SOUL.md               # Agent personality configuration
+├── Cargo.toml            # Rust dependencies
+└── package.json          # pnpm scripts
 ```
+
+---
+
+## 🏗 Architecture
+
+OpenAgent follows a **modular, loosely-coupled architecture** with clear separation of concerns:
+
+```mermaid
+graph TB
+    subgraph "Channels"
+        TG[Telegram]
+        CLI[CLI]
+        WS[WebSocket]
+    end
+
+    subgraph "Core"
+        AGENT[Agent Client]
+        PROV[LLM Providers]
+        TOOLS[Tool Manager]
+    end
+
+    subgraph "Storage"
+        PG[(PostgreSQL)]
+        OS[(OpenSearch)]
+    end
+
+    subgraph "Execution"
+        SANDBOX[Sandbox Manager]
+    end
+
+    TG --> AGENT
+    CLI --> AGENT
+    WS --> AGENT
+    
+    AGENT --> PROV
+    AGENT --> TOOLS
+    AGENT --> PG
+    AGENT --> OS
+    
+    TOOLS --> SANDBOX
+```
+
+### Core Traits
+
+| Trait | Purpose |
+|-------|---------|
+| `LlmProvider` | Abstract LLM interface (OpenRouter, Anthropic, OpenAI) |
+| `Channel` | Messaging platform interface (Telegram, Discord, etc.) |
+| `StorageBackend` | Persistence layer (PostgreSQL, OpenSearch, SQLite) |
+| `CodeExecutor` | Code execution sandbox (OS, Wasm, Container) |
+| `Plugin` | Extension interface for custom functionality |
 
 ---
 
 ## 📚 Documentation
 
-- [System Design](docs/DESIGN.md) - Architecture, data flows, and component details
-- [SOUL.md](SOUL.md) - Agent personality configuration
+| Document | Description |
+|----------|-------------|
+| [Documentation Index](docs/README.md) | Overview and quick links |
+| [Architecture](docs/architecture.md) | System design and module structure |
+| [Core Traits](docs/core-traits.md) | LlmProvider, Channel, Storage, Executor |
+| [Configuration](docs/configuration.md) | Config file format and options |
+| [Agent Module](docs/agent.md) | Conversation and tool management |
+| [Database Module](docs/database.md) | PostgreSQL, OpenSearch, vectors |
+| [Sandbox Module](docs/sandbox.md) | Code execution environments |
+| [Channels](docs/channels.md) | Telegram, Discord, Slack |
+| [Gateway Protocol](docs/gateway-protocol.md) | WebSocket JSON-RPC protocol |
+| [Plugin SDK](docs/plugin-sdk.md) | Building custom plugins |
+| [Legacy Design](docs/DESIGN.md) | Original comprehensive design |
+| [SOUL.md](SOUL.md) | Agent personality configuration |
 
 ---
 

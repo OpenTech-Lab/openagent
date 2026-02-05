@@ -51,28 +51,41 @@ struct AppState {
 
 impl AppState {
     async fn new(config: Config) -> Result<Self> {
+        // Get OpenRouter config (required)
+        let openrouter_config = config.provider.openrouter.clone()
+            .ok_or_else(|| Error::Config("OpenRouter configuration is required".into()))?;
+        
         // Initialize OpenRouter client
-        let llm_client = OpenRouterClient::new(config.openrouter.clone())?;
+        let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
 
         // Initialize conversation manager
-        let conversations = ConversationManager::new(&config.openrouter.default_model)
+        let conversations = ConversationManager::new(&openrouter_config.default_model)
             .with_system_prompt(DEFAULT_SYSTEM_PROMPT);
 
         // Try to initialize database (optional)
-        let memory_store = match init_pool(&config.database).await {
-            Ok(pool) => {
-                // Try to initialize OpenSearch
-                let opensearch = match OpenSearchClient::new(&config.opensearch).await {
-                    Ok(os) => Some(os),
-                    Err(e) => {
-                        warn!("OpenSearch not available: {}. Using PostgreSQL only.", e);
-                        None
-                    }
-                };
-                Some(MemoryStore::new(pool, opensearch))
-            }
-            Err(e) => {
-                warn!("Database not available: {}. Running without persistence.", e);
+        let memory_store = match &config.storage.postgres {
+            Some(db_config) => match init_pool(db_config).await {
+                Ok(pool) => {
+                    // Try to initialize OpenSearch
+                    let opensearch = match &config.storage.opensearch {
+                        Some(os_config) => match OpenSearchClient::new(os_config).await {
+                            Ok(os) => Some(os),
+                            Err(e) => {
+                                warn!("OpenSearch not available: {}. Using PostgreSQL only.", e);
+                                None
+                            }
+                        },
+                        None => None,
+                    };
+                    Some(MemoryStore::new(pool, opensearch))
+                }
+                Err(e) => {
+                    warn!("Database not available: {}. Running without persistence.", e);
+                    None
+                }
+            },
+            None => {
+                warn!("Database not configured. Running without persistence.");
                 None
             }
         };
@@ -112,17 +125,24 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::from_env()?;
 
+    // Get telegram config (required)
+    let telegram_config = config.channels.telegram.as_ref()
+        .ok_or_else(|| Error::Config("Telegram configuration is required".into()))?;
+
     // Validate required config
-    if config.telegram.bot_token.expose_secret().is_empty() {
+    if telegram_config.bot_token.expose_secret().is_empty() {
         return Err(Error::Config("TELEGRAM_BOT_TOKEN is required".to_string()));
     }
 
     // Initialize application state
     let state = Arc::new(AppState::new(config.clone()).await?);
 
+    let default_model = config.provider.openrouter.as_ref()
+        .map(|o| o.default_model.as_str())
+        .unwrap_or("not configured");
     info!(
         "Initialized with model: {}",
-        config.openrouter.default_model
+        default_model
     );
     info!(
         "Execution environment: {}",
@@ -130,7 +150,7 @@ async fn main() -> Result<()> {
     );
 
     // Create bot
-    let bot = Bot::new(config.telegram.bot_token.expose_secret());
+    let bot = Bot::new(telegram_config.bot_token.expose_secret());
 
     // Get bot info
     let me = bot.get_me().await.map_err(|e| Error::Telegram(e.to_string()))?;
@@ -161,12 +181,14 @@ async fn message_handler(
     let chat_id = msg.chat.id;
 
     // Check if user is allowed
-    if !state.config.telegram.allowed_users.is_empty() {
-        let user_id_num: i64 = user_id.parse().unwrap_or(0);
-        if !state.config.telegram.allowed_users.contains(&user_id_num) {
-            bot.send_message(chat_id, "You are not authorized to use this bot.")
-                .await?;
-            return Ok(());
+    if let Some(telegram_config) = &state.config.channels.telegram {
+        if !telegram_config.allow_from.is_empty() {
+            let user_id_num: i64 = user_id.parse().unwrap_or(0);
+            if !telegram_config.allow_from.contains(&user_id_num) {
+                bot.send_message(chat_id, "You are not authorized to use this bot.")
+                    .await?;
+                return Ok(());
+            }
         }
     }
 
@@ -227,10 +249,14 @@ async fn handle_command(
         }
         "model" => {
             let conversations = state.conversations.read().await;
+            let default_model = state.config.provider.openrouter
+                .as_ref()
+                .map(|c| c.default_model.as_str())
+                .unwrap_or("unknown");
             let model = conversations
                 .get(&user_id)
                 .map(|c| c.model.as_str())
-                .unwrap_or(&state.config.openrouter.default_model);
+                .unwrap_or(default_model);
             bot.send_message(chat_id, format!("Current model: `{}`", model))
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
@@ -262,6 +288,10 @@ async fn handle_command(
             }
         }
         "status" => {
+            let default_model = state.config.provider.openrouter
+                .as_ref()
+                .map(|c| c.default_model.as_str())
+                .unwrap_or("not configured");
             let status = format!(
                 "🤖 *OpenAgent Status*\n\n\
                 Version: {}\n\
@@ -270,7 +300,7 @@ async fn handle_command(
                 Database: {}\n\
                 Tools: {}",
                 openagent::VERSION,
-                state.config.openrouter.default_model,
+                default_model,
                 state.config.sandbox.execution_env,
                 if state.memory_store.is_some() { "Connected" } else { "Not connected" },
                 state.tools.count()

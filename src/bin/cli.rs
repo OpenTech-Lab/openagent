@@ -506,7 +506,10 @@ async fn check_status_interactive() -> Result<()> {
     let config = match Config::from_env() {
         Ok(c) => {
             println!("   {} Configuration loaded", style("✓").green());
-            println!("      └─ Model: {}", style(&c.openrouter.default_model).cyan());
+            let model = c.provider.openrouter.as_ref()
+                .map(|o| o.default_model.as_str())
+                .unwrap_or("not configured");
+            println!("      └─ Model: {}", style(model).cyan());
             println!("      └─ Execution: {}", style(&c.sandbox.execution_env).cyan());
             Some(c)
         }
@@ -1130,19 +1133,25 @@ async fn onboard(install_daemon: bool) -> Result<()> {
 async fn test_openrouter(config: &Config) -> Result<()> {
     use openagent::agent::OpenRouterClient;
 
-    let client = OpenRouterClient::new(config.openrouter.clone())?;
+    let openrouter_config = config.provider.openrouter.clone()
+        .ok_or_else(|| Error::Config("OpenRouter not configured".into()))?;
+    let client = OpenRouterClient::new(openrouter_config)?;
     client.list_models().await?;
     Ok(())
 }
 
 async fn test_database(config: &Config) -> Result<()> {
-    let pool = init_pool(&config.database).await?;
+    let postgres = config.storage.postgres.as_ref()
+        .ok_or_else(|| Error::Config("PostgreSQL not configured".into()))?;
+    let pool = init_pool(postgres).await?;
     sqlx::query("SELECT 1").execute(&pool).await?;
     Ok(())
 }
 
 async fn test_opensearch(config: &Config) -> Result<()> {
-    let client = OpenSearchClient::new(&config.opensearch).await?;
+    let os_config = config.storage.opensearch.as_ref()
+        .ok_or_else(|| Error::Config("OpenSearch not configured".into()))?;
+    let client = OpenSearchClient::new(os_config).await?;
     client.health_check().await?;
     Ok(())
 }
@@ -1168,7 +1177,9 @@ async fn test_telegram(config: &Config) -> Result<String> {
     use teloxide::prelude::*;
     use secrecy::ExposeSecret;
 
-    let bot = Bot::new(config.telegram.bot_token.expose_secret());
+    let telegram_config = config.channels.telegram.as_ref()
+        .ok_or_else(|| Error::Config("Telegram not configured".into()))?;
+    let bot = Bot::new(telegram_config.bot_token.expose_secret());
     let me = bot.get_me().await.map_err(|e| Error::Telegram(e.to_string()))?;
     Ok(me.username.clone().unwrap_or_else(|| "unknown".to_string()))
 }
@@ -1413,7 +1424,9 @@ fn configure_opensearch_manually(env_vars: &mut HashMap<String, String>) -> Resu
 /// Run migrations (internal helper)
 async fn run_migrations_internal() -> Result<()> {
     let config = Config::from_env()?;
-    let pool = init_pool(&config.database).await?;
+    let postgres = config.storage.postgres.as_ref()
+        .ok_or_else(|| Error::Config("PostgreSQL not configured for migrations".into()))?;
+    let pool = init_pool(postgres).await?;
     migrations::run(&pool).await?;
     Ok(())
 }
@@ -1459,7 +1472,10 @@ async fn check_status() -> Result<()> {
     };
 
     println!("Configuration: ✅ Loaded");
-    println!("  Model: {}", config.openrouter.default_model);
+    let default_model = config.provider.openrouter.as_ref()
+        .map(|c| c.default_model.as_str())
+        .unwrap_or("not configured");
+    println!("  Model: {}", default_model);
     println!("  Execution: {}", config.sandbox.execution_env);
 
     // Check OpenRouter
@@ -1488,18 +1504,22 @@ async fn run_migrations() -> Result<()> {
     println!("Running database migrations...\n");
 
     let config = Config::from_env()?;
-    let pool = init_pool(&config.database).await?;
+    let postgres = config.storage.postgres.as_ref()
+        .ok_or_else(|| Error::Config("PostgreSQL not configured for migrations".into()))?;
+    let pool = init_pool(postgres).await?;
 
     migrations::run(&pool).await?;
 
     // Initialize OpenSearch indexes if available
-    match OpenSearchClient::new(&config.opensearch).await {
-        Ok(client) => {
-            client.init_indexes().await?;
-            println!("OpenSearch indexes initialized");
-        }
-        Err(e) => {
-            println!("OpenSearch not available: {}", e);
+    if let Some(os_config) = &config.storage.opensearch {
+        match OpenSearchClient::new(os_config).await {
+            Ok(client) => {
+                client.init_indexes().await?;
+                println!("OpenSearch indexes initialized");
+            }
+            Err(e) => {
+                println!("OpenSearch not available: {}", e);
+            }
         }
     }
 
@@ -1512,9 +1532,11 @@ async fn test_llm(model: Option<String>) -> Result<()> {
     use openagent::agent::{GenerationOptions, Message, OpenRouterClient};
 
     let config = Config::from_env()?;
-    let client = OpenRouterClient::new(config.openrouter.clone())?;
+    let openrouter_config = config.provider.openrouter.clone()
+        .ok_or_else(|| Error::Config("OpenRouter not configured".into()))?;
+    let client = OpenRouterClient::new(openrouter_config.clone())?;
 
-    let model = model.unwrap_or(config.openrouter.default_model);
+    let model = model.unwrap_or(openrouter_config.default_model);
     println!("Testing model: {}\n", model);
 
     let messages = vec![
@@ -1574,7 +1596,9 @@ async fn list_models_interactive(select_mode: bool) -> Result<Option<String>> {
     use openagent::agent::OpenRouterClient;
 
     let config = Config::from_env()?;
-    let client = OpenRouterClient::new(config.openrouter)?;
+    let openrouter_config = config.provider.openrouter
+        .ok_or_else(|| Error::Config("OpenRouter not configured".into()))?;
+    let client = OpenRouterClient::new(openrouter_config)?;
 
     println!("\n{}", style("Loading available models...").dim());
 
@@ -1710,7 +1734,9 @@ async fn interactive_chat(model: Option<String>) -> Result<()> {
     use openagent::agent::{Conversation, GenerationOptions, OpenRouterClient};
 
     let config = Config::from_env()?;
-    let client = OpenRouterClient::new(config.openrouter.clone())?;
+    let openrouter_config = config.provider.openrouter.clone()
+        .ok_or_else(|| Error::Config("OpenRouter not configured".into()))?;
+    let client = OpenRouterClient::new(openrouter_config.clone())?;
 
     println!();
     println!("{}", style("╔══════════════════════════════════════════════════╗").cyan());
@@ -1731,23 +1757,23 @@ async fn interactive_chat(model: Option<String>) -> Result<()> {
         let choice = prompt_menu("How would you like to select a model?", model_options, 0)?;
 
         match choice {
-            0 => config.openrouter.default_model.clone(),
+            0 => openrouter_config.default_model.clone(),
             1 => {
                 if let Some(selected) = list_models_interactive(true).await? {
                     selected
                 } else {
-                    config.openrouter.default_model.clone()
+                    openrouter_config.default_model.clone()
                 }
             }
             2 => {
                 let custom = prompt("Enter model ID (e.g., anthropic/claude-3.5-sonnet)")?;
                 if custom.is_empty() {
-                    config.openrouter.default_model.clone()
+                    openrouter_config.default_model.clone()
                 } else {
                     custom
                 }
             }
-            _ => config.openrouter.default_model.clone(),
+            _ => openrouter_config.default_model.clone(),
         }
     };
 

@@ -93,6 +93,16 @@ url = "2.5"
 # Find executables in PATH
 which = "7.0"
 
+# Configuration file parsing
+json5 = "0.4"
+toml = "0.8"
+
+# Directory utilities
+dirs = "6.0"
+
+# Human-readable durations in config
+humantime-serde = "1.1"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"

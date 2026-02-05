@@ -1,5 +1,12 @@
 # OpenAgent System Design
 
+> **Note:** This document is part of the modular documentation. For a quick overview, see the [Documentation Index](./README.md). For detailed module documentation, see:
+> - [Architecture](./architecture.md) - System design principles
+> - [Core Traits](./core-traits.md) - Trait abstractions
+> - [Configuration](./configuration.md) - Config system
+> - [Agent](./agent.md) | [Database](./database.md) | [Sandbox](./sandbox.md) | [Channels](./channels.md)
+> - [Gateway Protocol](./gateway-protocol.md) | [Plugin SDK](./plugin-sdk.md)
+
 This document describes the architecture, data flows, and component interactions of OpenAgent.
 
 ## Table of Contents
@@ -105,18 +112,38 @@ C4Context
 
 ### Module Structure
 
+OpenAgent follows a modular, loosely-coupled architecture inspired by [openclaw](https://github.com/openclaw/openclaw):
+
 ```mermaid
 graph LR
     subgraph "openagent (lib)"
         LIB[lib.rs]
-        CFG[config.rs]
-        ERR[error.rs]
+
+        subgraph "core/"
+            PROV_TRAIT[provider.rs<br/>LlmProvider trait]
+            CHAN_TRAIT[channel.rs<br/>Channel trait]
+            STOR_TRAIT[storage.rs<br/>StorageBackend trait]
+            EXEC_TRAIT[executor.rs<br/>CodeExecutor trait]
+            CORE_TYPES[types.rs<br/>Message, Role]
+        end
+
+        subgraph "config/"
+            CFG_MOD[mod.rs]
+            CFG_IO[io.rs<br/>load/save]
+            CFG_PATHS[paths.rs<br/>directories]
+            CFG_VALID[validation.rs]
+            subgraph "types/"
+                CFG_PROV[provider.rs]
+                CFG_CHAN[channel.rs]
+                CFG_STOR[storage.rs]
+                CFG_SAND[sandbox.rs]
+            end
+        end
 
         subgraph "agent/"
             CLIENT[client.rs]
             CONV[conversation.rs]
             PROMPT[prompts.rs]
-            SOUL[Soul]
             TOOLS[tools.rs]
             TYPES[types.rs]
         end
@@ -133,29 +160,108 @@ graph LR
             WASM[wasm.rs]
             CONT[container.rs]
         end
+
+        subgraph "gateway/"
+            GW_MOD[mod.rs]
+            subgraph "protocol/"
+                SCHEMA[schema.rs<br/>GatewayFrame]
+                GW_TYPES[types.rs<br/>Requests/Events]
+            end
+        end
+
+        subgraph "plugin_sdk/"
+            PLUGIN_MOD[mod.rs]
+            MANIFEST[manifest.rs]
+            TRAITS[traits.rs<br/>Plugin trait]
+            REGISTRY[registry.rs<br/>PluginRegistry]
+        end
+
+        ERR[error.rs]
     end
 
     subgraph "binaries"
         GATEWAY[bin/gateway.rs]
         CLITOOL[bin/cli.rs]
     end
-    
-    subgraph "configuration"
-        SOULMD[SOUL.md]
-        ENVFILE[.env]
-    end
 
-    LIB --> CFG
-    LIB --> ERR
-    LIB --> CLIENT
-    LIB --> PG
-    LIB --> EXEC
-    PROMPT --> SOUL
-    SOUL --> SOULMD
+    LIB --> PROV_TRAIT
+    LIB --> CHAN_TRAIT
+    LIB --> STOR_TRAIT
+    LIB --> EXEC_TRAIT
+    LIB --> CFG_MOD
+    LIB --> PLUGIN_MOD
+    LIB --> GW_MOD
 
     GATEWAY --> LIB
     CLITOOL --> LIB
-    CLITOOL --> SOUL
+```
+
+### Design Principles
+
+OpenAgent's architecture follows these core principles:
+
+1. **Trait-based Abstraction**: All major components (providers, channels, storage, executors) are defined as traits, enabling loose coupling and easy testing.
+
+2. **Modular Configuration**: Configuration is split into focused modules rather than a single monolithic file:
+   - `config/types/provider.rs` - LLM provider settings
+   - `config/types/channel.rs` - Messaging channel settings
+   - `config/types/storage.rs` - Database/storage settings
+   - `config/types/sandbox.rs` - Code execution settings
+
+3. **Plugin Architecture**: The `plugin_sdk` module provides interfaces for extending OpenAgent:
+   - Register new LLM providers
+   - Add messaging channels
+   - Implement custom storage backends
+   - Create new code executors
+
+4. **Gateway Protocol**: WebSocket-based JSON protocol for client communication:
+   - Request/Response pattern with message IDs
+   - Event streaming for real-time updates
+   - Session management
+   - Authentication support
+
+### Core Traits
+
+```mermaid
+classDiagram
+    class LlmProvider {
+        <<trait>>
+        +name() str
+        +generate(messages, options) Result~LlmResponse~
+        +stream(messages, options) Stream~Chunk~
+    }
+
+    class Channel {
+        <<trait>>
+        +name() str
+        +start() Result
+        +stop() Result
+        +send(reply) Result
+        +capabilities() ChannelCapabilities
+    }
+
+    class StorageBackend {
+        <<trait>>
+        +name() str
+        +save_conversation(conv) Result~String~
+        +load_conversation(id) Result~Option~
+        +delete_conversation(id) Result
+        +list_conversations(user_id) Result~Vec~
+    }
+
+    class CodeExecutor {
+        <<trait>>
+        +name() str
+        +supports_language(lang) bool
+        +execute(request) Result~ExecutionResult~
+    }
+
+    class Plugin {
+        <<trait>>
+        +manifest() PluginManifest
+        +on_load(api) Result
+        +on_unload() Result
+    }
 ```
 
 ---
