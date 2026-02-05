@@ -102,6 +102,7 @@ dirs = "6.0"
 
 # Human-readable durations in config
 humantime-serde = "1.1"
+rand = "0.9.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -212,6 +212,7 @@ pub struct OsSandboxConfig {
 }
 
 /// Sandbox mode for sessions
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxMode {

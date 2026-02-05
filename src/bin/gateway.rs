@@ -3,7 +3,7 @@
 //! The main entry point for the Telegram bot interface.
 
 use openagent::agent::{
-    Conversation, ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
+    ConversationManager, GenerationOptions, OpenRouterClient,
     ToolRegistry, ReadFileTool, WriteFileTool, prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use openagent::config::Config;
@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 /// Bot commands
+#[allow(dead_code)]
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase", description = "Available commands:")]
 enum Command {
@@ -51,9 +52,9 @@ struct AppState {
 
 impl AppState {
     async fn new(config: Config) -> Result<Self> {
-        // Get OpenRouter config (required)
+        // Get OpenRouter config (required for now)
         let openrouter_config = config.provider.openrouter.clone()
-            .ok_or_else(|| Error::Config("OpenRouter configuration is required".into()))?;
+            .ok_or_else(|| Error::Config("OpenRouter not configured. Set OPENROUTER_API_KEY environment variable.".into()))?;
         
         // Initialize OpenRouter client
         let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
@@ -125,14 +126,19 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::from_env()?;
 
-    // Get telegram config (required)
-    let telegram_config = config.channels.telegram.as_ref()
-        .ok_or_else(|| Error::Config("Telegram configuration is required".into()))?;
-
-    // Validate required config
-    if telegram_config.bot_token.expose_secret().is_empty() {
-        return Err(Error::Config("TELEGRAM_BOT_TOKEN is required".to_string()));
-    }
+    // Get telegram config (optional)
+    let telegram_config = match config.channels.telegram.as_ref() {
+        Some(cfg) if !cfg.bot_token.expose_secret().is_empty() => Some(cfg),
+        Some(_) => {
+            warn!("TELEGRAM_BOT_TOKEN is empty, Telegram bot will not start");
+            None
+        }
+        None => {
+            warn!("Telegram not configured, Telegram bot will not start");
+            warn!("Set TELEGRAM_BOT_TOKEN environment variable to enable Telegram");
+            None
+        }
+    };
 
     // Initialize application state
     let state = Arc::new(AppState::new(config.clone()).await?);
@@ -149,23 +155,33 @@ async fn main() -> Result<()> {
         config.sandbox.execution_env
     );
 
-    // Create bot
-    let bot = Bot::new(telegram_config.bot_token.expose_secret());
+    // Start Telegram bot if configured
+    if let Some(telegram_config) = telegram_config {
+        // Create bot
+        let bot = Bot::new(telegram_config.bot_token.expose_secret());
 
-    // Get bot info
-    let me = bot.get_me().await.map_err(|e| Error::Telegram(e.to_string()))?;
-    info!("Bot started: @{}", me.username.as_deref().unwrap_or("unknown"));
+        // Get bot info
+        let me = bot.get_me().await.map_err(|e| Error::Telegram(e.to_string()))?;
+        info!("Bot started: @{}", me.username.as_deref().unwrap_or("unknown"));
 
-    // Start dispatcher
-    let handler = dptree::entry()
-        .branch(Update::filter_message().endpoint(message_handler));
+        // Start dispatcher
+        let handler = dptree::entry()
+            .branch(Update::filter_message().endpoint(message_handler));
 
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![state])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+        Dispatcher::builder(bot, handler)
+            .dependencies(dptree::deps![state])
+            .enable_ctrlc_handler()
+            .build()
+            .dispatch()
+            .await;
+    } else {
+        info!("No channels configured. Gateway running in standby mode.");
+        info!("Configure TELEGRAM_BOT_TOKEN to enable Telegram bot.");
+        info!("Press Ctrl+C to exit.");
+        
+        // Wait for shutdown signal
+        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl-c");
+    }
 
     info!("Gateway shutdown complete");
     Ok(())
@@ -306,7 +322,7 @@ async fn handle_command(
                 state.tools.count()
             );
             bot.send_message(chat_id, status)
-                .parse_mode(ParseMode::Markdown)
+                .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         }
         _ => {

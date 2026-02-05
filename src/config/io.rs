@@ -60,13 +60,17 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
 pub fn load_config_from_env() -> Result<Config> {
     use secrecy::SecretString;
 
+    // Load .env file if it exists
+    dotenvy::dotenv().ok();
+
     let mut config = Config::default();
 
     // Load OpenRouter config
     if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
         config.provider.openrouter = Some(super::types::provider::OpenRouterConfig {
             api_key: SecretString::from(api_key),
-            default_model: std::env::var("OPENROUTER_MODEL")
+            default_model: std::env::var("DEFAULT_MODEL")
+                .or_else(|_| std::env::var("OPENROUTER_MODEL"))
                 .unwrap_or_else(|_| "anthropic/claude-sonnet-4".to_string()),
             base_url: std::env::var("OPENROUTER_BASE_URL")
                 .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string()),
@@ -170,6 +174,7 @@ pub fn save_config(config: &Config, path: &Path) -> Result<()> {
 }
 
 /// Read a configuration file into a snapshot
+#[allow(dead_code)]
 pub fn read_config_snapshot(path: &Path) -> ConfigSnapshot {
     if !path.exists() {
         return ConfigSnapshot {

@@ -28,6 +28,9 @@
 git clone https://github.com/OpenTech-Lab/openagent.git
 cd openagent
 
+# Install pnpm(option)
+https://pnpm.io/installation
+
 # Install dependencies (Rust toolchain & pnpm packages)
 pnpm install
 

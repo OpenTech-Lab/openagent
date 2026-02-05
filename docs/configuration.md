@@ -233,6 +233,16 @@ ALLOWED_DIR=/tmp/openagent-workspace
 # Gateway
 GATEWAY_PORT=18789
 GATEWAY_BIND=127.0.0.1
+
+# Web Search - Brave
+BRAVE_API_KEY=your-brave-search-api-key
+BRAVE_TIMEOUT=30
+BRAVE_RESULT_COUNT=10
+
+# Web Search - Perplexity
+PERPLEXITY_API_KEY=your-perplexity-api-key
+PERPLEXITY_TIMEOUT=30
+PERPLEXITY_MODEL=perplexity/sonar-pro
 ```
 
 ## Config File Example

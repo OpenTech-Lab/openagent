@@ -59,11 +59,13 @@ pub fn workspace_dir() -> PathBuf {
 }
 
 /// Get the credentials directory
+#[allow(dead_code)]
 pub fn credentials_dir() -> PathBuf {
     state_dir().join("credentials")
 }
 
 /// Get the cache directory
+#[allow(dead_code)]
 pub fn cache_dir() -> PathBuf {
     // Check for explicit override
     if let Ok(dir) = std::env::var("OPENAGENT_CACHE_DIR") {
@@ -76,11 +78,13 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Get the logs directory
+#[allow(dead_code)]
 pub fn logs_dir() -> PathBuf {
     state_dir().join("logs")
 }
 
 /// Ensure a directory exists
+#[allow(dead_code)]
 pub fn ensure_dir(path: &PathBuf) -> std::io::Result<()> {
     if !path.exists() {
         std::fs::create_dir_all(path)?;
@@ -89,6 +93,7 @@ pub fn ensure_dir(path: &PathBuf) -> std::io::Result<()> {
 }
 
 /// Ensure all required directories exist
+#[allow(dead_code)]
 pub fn ensure_all_dirs() -> std::io::Result<()> {
     ensure_dir(&config_dir())?;
     ensure_dir(&state_dir())?;

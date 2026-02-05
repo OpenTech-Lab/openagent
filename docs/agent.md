@@ -245,11 +245,94 @@ The agent can use tools to extend its capabilities:
 | Tool | Description |
 |------|-------------|
 | `code_execution` | Execute Python, JS, etc. |
-| `web_search` | Search the internet |
+| `web_search` | Search the web using DuckDuckGo (no API key required) |
+| `brave_search` | Search the web using Brave Search API |
+| `perplexity_search` | AI-powered search using Perplexity API |
 | `file_read` | Read files |
 | `file_write` | Write files |
 | `memory_store` | Store memories |
 | `memory_search` | Search memories |
+
+### Web Search Tools
+
+OpenAgent includes three web search tools:
+
+#### DuckDuckGo Search (Default - No API Key Required)
+
+The default web search tool that works without any API key:
+
+```rust
+use openagent::agent::DuckDuckGoSearchTool;
+
+// Create the default search tool - no configuration needed!
+let search = DuckDuckGoSearchTool::new();
+
+// Or with custom timeout
+let search = DuckDuckGoSearchTool::with_timeout(60);
+
+// Register with tool manager
+tools.register(search);
+```
+
+This tool uses DuckDuckGo's Instant Answer API with HTML scraping fallback for comprehensive results.
+
+#### Brave Search
+
+Traditional web search using Brave's privacy-focused search API:
+
+```rust
+use openagent::agent::{BraveSearchTool, BraveSearchConfig};
+
+// Configure from environment (BRAVE_API_KEY)
+let brave = BraveSearchTool::from_env()
+    .expect("BRAVE_API_KEY required");
+
+// Or manual configuration
+let brave = BraveSearchTool::new(BraveSearchConfig {
+    api_key: "your-api-key".to_string(),
+    timeout_secs: 30,
+    result_count: 10,
+});
+
+// Register with tool manager
+tools.register(brave);
+```
+
+Environment variables:
+- `BRAVE_API_KEY` (required) - Your Brave Search API key
+- `BRAVE_TIMEOUT` (optional) - Request timeout in seconds (default: 30)
+- `BRAVE_RESULT_COUNT` (optional) - Default result count (default: 10)
+
+#### Perplexity Search
+
+AI-powered search with synthesized answers:
+
+```rust
+use openagent::agent::{PerplexitySearchTool, PerplexityConfig};
+
+// Configure from environment
+let perplexity = PerplexitySearchTool::from_env()
+    .expect("PERPLEXITY_API_KEY or OPENROUTER_API_KEY required");
+
+// Or manual configuration
+let perplexity = PerplexitySearchTool::new(PerplexityConfig {
+    api_key: "your-api-key".to_string(),
+    use_openrouter: false,  // true for OpenRouter proxy
+    openrouter_api_key: None,
+    timeout_secs: 30,
+    model: "sonar-pro".to_string(),
+});
+
+tools.register(perplexity);
+```
+
+Environment variables:
+- `PERPLEXITY_API_KEY` (optional) - Direct Perplexity API key
+- `OPENROUTER_API_KEY` (optional) - OpenRouter API key (fallback)
+- `PERPLEXITY_TIMEOUT` (optional) - Request timeout in seconds (default: 30)
+- `PERPLEXITY_MODEL` (optional) - Model to use (default: perplexity/sonar-pro)
+
+Note: Either `PERPLEXITY_API_KEY` or `OPENROUTER_API_KEY` is required for Perplexity search.
 
 ### Tool Registration
 

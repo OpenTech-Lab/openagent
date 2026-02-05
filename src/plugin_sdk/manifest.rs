@@ -135,6 +135,7 @@ pub fn load_manifest(path: &std::path::Path) -> crate::Result<PluginManifest> {
 }
 
 /// Result of loading a plugin manifest
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ManifestLoadResult {
     /// Successfully loaded

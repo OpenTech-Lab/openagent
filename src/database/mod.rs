@@ -9,5 +9,5 @@ mod postgres;
 mod memory;
 
 pub use opensearch::OpenSearchClient;
-pub use postgres::{PostgresPool, init_pool, migrations};
+pub use postgres::{PostgresPool, init_pool, init_pool_for_migrations, migrations};
 pub use memory::{Memory, MemoryStore};

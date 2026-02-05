@@ -148,6 +148,7 @@ impl Default for PluginRegistry {
 }
 
 /// Scan extension directories for plugins
+#[allow(dead_code)]
 pub fn scan_extension_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
 

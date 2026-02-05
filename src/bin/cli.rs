@@ -6,8 +6,9 @@ use clap::{Parser, Subcommand};
 use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input, MultiSelect, Password, Select};
 use openagent::config::{Config, ExecutionEnv};
-use openagent::database::{init_pool, migrations, OpenSearchClient};
+use openagent::database::{init_pool, init_pool_for_migrations, migrations, OpenSearchClient};
 use openagent::{Error, Result, VERSION};
+use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::net::TcpListener;
@@ -136,9 +137,13 @@ async fn main() -> Result<()> {
 const PORT_RANGE_START: u16 = 20000;
 const PORT_RANGE_END: u16 = 29999;
 
-/// Find a free port in the range 20000-29999
+/// Find a free port in the range 20000-29999 (random selection)
 fn find_free_port() -> Option<u16> {
-    for port in PORT_RANGE_START..=PORT_RANGE_END {
+    let mut ports: Vec<u16> = (PORT_RANGE_START..=PORT_RANGE_END).collect();
+    let mut rng = rand::rng();
+    ports.shuffle(&mut rng);
+    
+    for port in ports {
         if is_port_available(port) {
             return Some(port);
         }
@@ -767,36 +772,82 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     }
 
     // Select default model
-    let model_options = &[
-        "anthropic/claude-3.5-sonnet  ← Recommended (best balance)",
-        "anthropic/claude-3-opus      ← Most capable",
-        "openai/gpt-4-turbo           ← OpenAI's latest",
-        "meta-llama/llama-3.1-70b     ← Open source",
-        "google/gemini-pro-1.5        ← Google's model",
-        "✏️  Custom (enter your own model ID)",
-    ];
+    let current_model = env_vars.get("DEFAULT_MODEL").cloned().unwrap_or_default();
+    let has_custom_model = !current_model.is_empty() 
+        && current_model != "anthropic/claude-3.5-sonnet"
+        && current_model != "anthropic/claude-3-opus"
+        && current_model != "openai/gpt-4-turbo"
+        && current_model != "meta-llama/llama-3.1-70b-instruct"
+        && current_model != "google/gemini-pro-1.5";
 
-    let model_choice = prompt_menu("Select default AI model:", model_options, 0)?;
+    // Build model options dynamically to include current custom model
+    let model_options: Vec<String> = if has_custom_model {
+        vec![
+            format!("{}  ← Current", current_model),
+            "anthropic/claude-3.5-sonnet  ← Recommended (best balance)".to_string(),
+            "anthropic/claude-3-opus      ← Most capable".to_string(),
+            "openai/gpt-4-turbo           ← OpenAI's latest".to_string(),
+            "meta-llama/llama-3.1-70b     ← Open source".to_string(),
+            "google/gemini-pro-1.5        ← Google's model".to_string(),
+            "✏️  Custom (enter your own model ID)".to_string(),
+        ]
+    } else {
+        vec![
+            "anthropic/claude-3.5-sonnet  ← Recommended (best balance)".to_string(),
+            "anthropic/claude-3-opus      ← Most capable".to_string(),
+            "openai/gpt-4-turbo           ← OpenAI's latest".to_string(),
+            "meta-llama/llama-3.1-70b     ← Open source".to_string(),
+            "google/gemini-pro-1.5        ← Google's model".to_string(),
+            "✏️  Custom (enter your own model ID)".to_string(),
+        ]
+    };
 
-    let default_model = match model_choice {
-        0 => "anthropic/claude-3.5-sonnet".to_string(),
-        1 => "anthropic/claude-3-opus".to_string(),
-        2 => "openai/gpt-4-turbo".to_string(),
-        3 => "meta-llama/llama-3.1-70b-instruct".to_string(),
-        4 => "google/gemini-pro-1.5".to_string(),
-        5 => {
-            println!();
-            println!("   Browse available models at: {}", style("https://openrouter.ai/models").cyan().underlined());
-            println!("   Format: provider/model-name (e.g., anthropic/claude-3-haiku)");
-            let custom = prompt("Enter model ID")?;
-            if custom.is_empty() {
-                println!("   Using default: anthropic/claude-3.5-sonnet");
-                "anthropic/claude-3.5-sonnet".to_string()
-            } else {
-                custom
+    let model_options_refs: Vec<&str> = model_options.iter().map(|s| s.as_str()).collect();
+    let model_choice = prompt_menu("Select default AI model:", &model_options_refs, 0)?;
+
+    let default_model = if has_custom_model {
+        match model_choice {
+            0 => current_model.clone(), // Keep current custom model
+            1 => "anthropic/claude-3.5-sonnet".to_string(),
+            2 => "anthropic/claude-3-opus".to_string(),
+            3 => "openai/gpt-4-turbo".to_string(),
+            4 => "meta-llama/llama-3.1-70b-instruct".to_string(),
+            5 => "google/gemini-pro-1.5".to_string(),
+            6 => {
+                println!();
+                println!("   Browse available models at: {}", style("https://openrouter.ai/models").cyan().underlined());
+                println!("   Format: provider/model-name (e.g., anthropic/claude-3-haiku)");
+                let custom = prompt("Enter model ID")?;
+                if custom.is_empty() {
+                    println!("   Using current: {}", current_model);
+                    current_model.clone()
+                } else {
+                    custom
+                }
             }
+            _ => current_model.clone(),
         }
-        _ => "anthropic/claude-3.5-sonnet".to_string(),
+    } else {
+        match model_choice {
+            0 => "anthropic/claude-3.5-sonnet".to_string(),
+            1 => "anthropic/claude-3-opus".to_string(),
+            2 => "openai/gpt-4-turbo".to_string(),
+            3 => "meta-llama/llama-3.1-70b-instruct".to_string(),
+            4 => "google/gemini-pro-1.5".to_string(),
+            5 => {
+                println!();
+                println!("   Browse available models at: {}", style("https://openrouter.ai/models").cyan().underlined());
+                println!("   Format: provider/model-name (e.g., anthropic/claude-3-haiku)");
+                let custom = prompt("Enter model ID")?;
+                if custom.is_empty() {
+                    println!("   Using default: anthropic/claude-3.5-sonnet");
+                    "anthropic/claude-3.5-sonnet".to_string()
+                } else {
+                    custom
+                }
+            }
+            _ => "anthropic/claude-3.5-sonnet".to_string(),
+        }
     };
     env_vars.insert("DEFAULT_MODEL".to_string(), default_model.clone());
     println!("   {} Model set to {}", style("✓").green(), style(&default_model).cyan());
@@ -838,7 +889,33 @@ async fn onboard(install_daemon: bool) -> Result<()> {
 
     // Optional: Restrict to specific users
     println!();
-    if prompt_yes_no("   Restrict bot to specific Telegram user IDs? (recommended for security)", false)? {
+    let current_allowed = env_vars.get("ALLOWED_USERS")
+        .or_else(|| env_vars.get("TELEGRAM_ALLOWED_USERS"))
+        .cloned()
+        .unwrap_or_default();
+    let has_allowed_users = !current_allowed.is_empty();
+
+    if has_allowed_users {
+        println!("   Current allowed user IDs: {}", style(&current_allowed).cyan());
+        if prompt_yes_no("   Keep existing user restrictions?", true)? {
+            env_vars.insert("ALLOWED_USERS".to_string(), current_allowed.clone());
+        } else if prompt_yes_no("   Configure new user restrictions?", true)? {
+            println!();
+            println!("   To find your Telegram user ID:");
+            println!("   - Send a message to @userinfobot on Telegram");
+            println!("   - It will reply with your user ID");
+            println!();
+            let user_ids = prompt("   Enter comma-separated user IDs (e.g., 123456789,987654321): ")?;
+            if !user_ids.is_empty() {
+                env_vars.insert("ALLOWED_USERS".to_string(), user_ids);
+                println!("   ✅ User restrictions configured");
+            } else {
+                println!("   ⚠️  No restrictions configured. Bot will accept messages from anyone.");
+            }
+        } else {
+            println!("   ⚠️  Restrictions removed. Bot will accept messages from anyone.");
+        }
+    } else if prompt_yes_no("   Restrict bot to specific Telegram user IDs? (recommended for security)", false)? {
         println!();
         println!("   To find your Telegram user ID:");
         println!("   - Send a message to @userinfobot on Telegram");
@@ -1023,7 +1100,15 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         env_vars.insert("CONTAINER_IMAGE".to_string(), image);
     }
 
-    let workspace = prompt_with_default("   Workspace directory", "/tmp/openagent-workspace")?;
+    // Generate a unique workspace directory with UUID
+    let current_workspace = env_vars.get("ALLOWED_DIR").cloned().unwrap_or_default();
+    let default_workspace = if current_workspace.is_empty() || current_workspace == "/tmp/openagent-workspace" {
+        let uuid = uuid::Uuid::new_v4();
+        format!("/tmp/openagent-ws-{}", uuid)
+    } else {
+        current_workspace
+    };
+    let workspace = prompt_with_default("   Workspace directory", &default_workspace)?;
     env_vars.insert("ALLOWED_DIR".to_string(), workspace);
 
     println!("   ✅ Sandbox configured ({})", execution_env);
@@ -1426,7 +1511,8 @@ async fn run_migrations_internal() -> Result<()> {
     let config = Config::from_env()?;
     let postgres = config.storage.postgres.as_ref()
         .ok_or_else(|| Error::Config("PostgreSQL not configured for migrations".into()))?;
-    let pool = init_pool(postgres).await?;
+    // Use init_pool_for_migrations to skip pgvector check - migrations will create it
+    let pool = init_pool_for_migrations(postgres).await?;
     migrations::run(&pool).await?;
     Ok(())
 }
@@ -1506,7 +1592,8 @@ async fn run_migrations() -> Result<()> {
     let config = Config::from_env()?;
     let postgres = config.storage.postgres.as_ref()
         .ok_or_else(|| Error::Config("PostgreSQL not configured for migrations".into()))?;
-    let pool = init_pool(postgres).await?;
+    // Use init_pool_for_migrations to skip pgvector check - migrations will create it
+    let pool = init_pool_for_migrations(postgres).await?;
 
     migrations::run(&pool).await?;
 

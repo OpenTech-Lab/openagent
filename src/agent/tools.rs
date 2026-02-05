@@ -165,6 +165,7 @@ impl ToolRegistry {
 }
 
 /// Built-in tool: Execute Python code
+#[allow(dead_code)]
 pub struct PythonExecuteTool;
 
 #[async_trait]

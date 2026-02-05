@@ -12,6 +12,17 @@ pub type PostgresPool = PgPool;
 
 /// Initialize the PostgreSQL connection pool
 pub async fn init_pool(config: &DatabaseConfig) -> Result<PostgresPool> {
+    init_pool_with_options(config, true).await
+}
+
+/// Initialize the PostgreSQL connection pool without pgvector check
+/// Use this for running migrations before pgvector is installed
+pub async fn init_pool_for_migrations(config: &DatabaseConfig) -> Result<PostgresPool> {
+    init_pool_with_options(config, false).await
+}
+
+/// Initialize the PostgreSQL connection pool with options
+async fn init_pool_with_options(config: &DatabaseConfig, require_pgvector: bool) -> Result<PostgresPool> {
     info!("Initializing PostgreSQL connection pool");
 
     let pool = PgPoolOptions::new()
@@ -20,32 +31,34 @@ pub async fn init_pool(config: &DatabaseConfig) -> Result<PostgresPool> {
         .connect(config.url.expose_secret())
         .await?;
 
-    // Verify connection and check for required extensions
-    verify_database(&pool).await?;
+    // Verify connection and optionally check for required extensions
+    verify_database(&pool, require_pgvector).await?;
 
     info!("PostgreSQL connection pool initialized successfully");
     Ok(pool)
 }
 
-/// Verify database connection and check for required extensions
-async fn verify_database(pool: &PgPool) -> Result<()> {
+/// Verify database connection and optionally check for required extensions
+async fn verify_database(pool: &PgPool, require_pgvector: bool) -> Result<()> {
     // Check connection
     sqlx::query("SELECT 1")
         .execute(pool)
         .await
         .map_err(|e| Error::Database(sqlx::Error::from(e)))?;
 
-    // Check for pgvector extension
-    let result: Option<(String,)> = sqlx::query_as(
-        "SELECT extname FROM pg_extension WHERE extname = 'vector'"
-    )
-    .fetch_optional(pool)
-    .await?;
+    if require_pgvector {
+        // Check for pgvector extension
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT extname FROM pg_extension WHERE extname = 'vector'"
+        )
+        .fetch_optional(pool)
+        .await?;
 
-    if result.is_none() {
-        return Err(Error::Database(sqlx::Error::Configuration(
-            "pgvector extension is not installed. Run: CREATE EXTENSION vector;".into()
-        )));
+        if result.is_none() {
+            return Err(Error::Database(sqlx::Error::Configuration(
+                "pgvector extension is not installed. Run: CREATE EXTENSION vector;".into()
+            )));
+        }
     }
 
     Ok(())
@@ -54,10 +67,23 @@ async fn verify_database(pool: &PgPool) -> Result<()> {
 /// Database migrations
 pub mod migrations {
     use super::*;
+    use tracing::warn;
 
     /// Run all migrations
     pub async fn run(pool: &PgPool) -> Result<()> {
         info!("Running database migrations");
+
+        // Try to create pgvector extension (requires superuser or extension already available)
+        match sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+            .execute(pool)
+            .await
+        {
+            Ok(_) => info!("pgvector extension enabled"),
+            Err(e) => {
+                warn!("Could not create pgvector extension: {}. Vector features may not work.", e);
+                warn!("If you need vector support, run as superuser: CREATE EXTENSION vector;");
+            }
+        }
 
         // Create conversations table
         sqlx::query(r#"
@@ -108,23 +134,35 @@ pub mod migrations {
         .execute(pool)
         .await?;
 
-        // Create indexes
-        sqlx::query(r#"
-            CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id);
-            CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories USING GIN(tags);
-        "#)
-        .execute(pool)
-        .await?;
+        // Create indexes (each must be a separate query for SQLx)
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
+            .execute(pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id)")
+            .execute(pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)")
+            .execute(pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories USING GIN(tags)")
+            .execute(pool)
+            .await?;
 
         // Create vector similarity search indexes (using IVFFlat for better performance)
         sqlx::query(r#"
             CREATE INDEX IF NOT EXISTS idx_messages_embedding ON messages
-            USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+            USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+        "#)
+        .execute(pool)
+        .await
+        .ok(); // Ignore if not enough data or vector type not available
 
+        sqlx::query(r#"
             CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories
-            USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+            USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
         "#)
         .execute(pool)
         .await
@@ -143,6 +181,7 @@ pub mod conversations {
     use uuid::Uuid;
 
     /// Save a conversation to the database
+    #[allow(dead_code)]
     pub async fn save(pool: &PgPool, conv: &Conversation) -> Result<()> {
         // Upsert conversation
         sqlx::query(r#"
@@ -185,6 +224,7 @@ pub mod conversations {
     }
 
     /// Load a conversation by ID
+    #[allow(dead_code)]
     pub async fn load(pool: &PgPool, id: Uuid) -> Result<Option<Conversation>> {
         #[derive(sqlx::FromRow)]
         struct ConvRow {
@@ -255,6 +295,7 @@ pub mod conversations {
     }
 
     /// Load the most recent conversation for a user
+    #[allow(dead_code)]
     pub async fn load_latest(pool: &PgPool, user_id: &str) -> Result<Option<Conversation>> {
         let id: Option<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1"
@@ -270,6 +311,7 @@ pub mod conversations {
     }
 
     /// Delete a conversation
+    #[allow(dead_code)]
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<()> {
         sqlx::query("DELETE FROM conversations WHERE id = $1")
             .bind(id)
