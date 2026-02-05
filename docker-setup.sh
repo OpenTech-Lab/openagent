@@ -599,8 +599,29 @@ parse_args() {
 
 # Main script
 main() {
-    # Parse arguments
-    local remaining_args=$(parse_args "$@")
+    # Parse arguments - must call directly (not in subshell) to preserve AGENT_NAME
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --*)
+                args+=("$arg")
+                ;;
+            *)
+                if [ -z "$AGENT_NAME" ] && [[ ! "$arg" =~ ^- ]]; then
+                    AGENT_NAME="$arg"
+                else
+                    args+=("$arg")
+                fi
+                ;;
+        esac
+    done
+
+    # Validate agent name if provided
+    if [ -n "$AGENT_NAME" ]; then
+        validate_agent_name "$AGENT_NAME"
+    fi
+
+    local remaining_args="${args[*]}"
     
     # Determine the action
     local action=""

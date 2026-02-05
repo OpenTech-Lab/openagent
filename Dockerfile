@@ -24,7 +24,12 @@ RUN mkdir -p src/bin && \
     echo "pub fn dummy() {}" > src/lib.rs
 
 # Build dependencies only (this layer will be cached)
-RUN cargo build --release && rm -rf src target/release/deps/openagent*
+RUN cargo build --release && \
+    rm -rf src && \
+    rm -rf target/release/.fingerprint/openagent-* && \
+    rm -rf target/release/deps/openagent* && \
+    rm -rf target/release/deps/libopenagent* && \
+    rm -rf target/release/incremental/openagent*
 
 # Copy actual source code
 COPY src ./src
@@ -58,6 +63,7 @@ COPY --from=builder /app/target/release/openagent-gateway /usr/local/bin/openage
 # Copy essential files
 COPY --from=builder /app/SOUL.md /app/SOUL.md
 COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/.env.example /app/.env.example
 
 # Create workspace directory
 RUN mkdir -p /app/workspace
