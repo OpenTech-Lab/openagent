@@ -134,7 +134,7 @@ impl Tool for SystemCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a system/shell command on the OS. Can run commands like 'apt update', 'mv a b', 'ls -la', 'cat file.txt', etc. Returns stdout, stderr, and exit code. Some dangerous commands may be blocked."
+        "Execute a system/shell command on the OS. Can install packages (apt update, apt install -y nginx), run services (service nginx start), execute commands (ls, cat, mv, cp, mkdir, curl, wget, etc.). Returns stdout, stderr, and exit code. Some dangerous commands (rm, sudo, kill) may be blocked for safety."
     }
 
     fn parameters_schema(&self) -> Value {

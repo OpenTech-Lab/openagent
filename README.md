@@ -332,11 +332,27 @@ The `system_command` tool allows the agent to execute shell commands on the host
 ```
 
 **Examples:**
-- `apt update` / `apt install <package>`
-- `mv old.txt new.txt`
-- `ls -la /path/to/dir`
-- `cat file.txt`
-- `mkdir -p /path/to/dir`
+- `apt update` / `apt install -y nginx` (install packages)
+- `service nginx start` (start services)
+- `curl`, `wget` (download files)
+- `mv old.txt new.txt`, `cp`, `mkdir -p`
+- `ls -la /path/to/dir`, `cat file.txt`
+
+**Package Installation (Docker):**
+
+When running in Docker, the agent can install and configure software:
+
+```
+User: "Set up a basic nginx web server"
+
+Agent will:
+1. apt update
+2. apt install -y nginx
+3. Write config to /etc/nginx/sites-available/
+4. service nginx start
+```
+
+This works because the Docker container runs as root, so `sudo` is not needed.
 
 **Security:**
 - Commands run with a configurable timeout (default: 60 seconds)
