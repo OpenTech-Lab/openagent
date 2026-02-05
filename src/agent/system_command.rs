@@ -26,6 +26,8 @@ pub struct SystemCommandTool {
     allowed_commands: HashSet<String>,
     /// Denylist of forbidden commands (checked first)
     denied_commands: HashSet<String>,
+    /// Optional user to run commands as (uses `sudo -u <user>`)
+    run_as_user: Option<String>,
 }
 
 impl Default for SystemCommandTool {
@@ -39,23 +41,40 @@ impl SystemCommandTool {
     /// By default, dangerous commands are denied
     pub fn new() -> Self {
         let mut denied = HashSet::new();
-        // Default denylist for dangerous commands
-        for cmd in &["rm", "sudo", "su", "chmod", "chown", "mkfs", "dd", "shutdown", "reboot", "init", "systemctl", "kill", "pkill", "killall"] {
+        // Default denylist for dangerous commands (reduced - allow more operations)
+        // Note: sudo is now allowed because package installation requires it
+        for cmd in &["rm", "mkfs", "dd", "shutdown", "reboot", "init", "kill", "pkill", "killall"] {
             denied.insert(cmd.to_string());
         }
 
         SystemCommandTool {
             working_dir: None,
-            timeout_secs: 60,
+            timeout_secs: 120, // Increased timeout for package installations
             allowed_commands: HashSet::new(),
             denied_commands: denied,
+            run_as_user: None,
         }
+    }
+
+    /// Create with a specific user to run commands as
+    /// This user should have passwordless sudo configured
+    pub fn with_run_as_user(mut self, user: impl Into<String>) -> Self {
+        self.run_as_user = Some(user.into());
+        self
     }
 
     /// Create with a specific working directory
     pub fn with_working_dir(working_dir: PathBuf) -> Self {
         let mut tool = Self::new();
         tool.working_dir = Some(working_dir);
+        tool
+    }
+
+    /// Create with a specific working directory and optional agent user
+    pub fn with_config(working_dir: PathBuf, agent_user: Option<String>) -> Self {
+        let mut tool = Self::new();
+        tool.working_dir = Some(working_dir);
+        tool.run_as_user = agent_user;
         tool
     }
 
@@ -134,7 +153,7 @@ impl Tool for SystemCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a system/shell command on the OS. Can install packages (apt update, apt install -y nginx), run services (service nginx start), execute commands (ls, cat, mv, cp, mkdir, curl, wget, etc.). Returns stdout, stderr, and exit code. Some dangerous commands (rm, sudo, kill) may be blocked for safety."
+        "Execute a shell command on the system. Commands are run through /bin/sh for full shell compatibility. Can install packages (sudo apt update && sudo apt install -y nginx), manage services (sudo systemctl start nginx), execute utilities (ls, cat, curl, wget, mkdir, cp, mv, etc.). Returns stdout, stderr, and exit code. Some dangerous commands (rm, kill, shutdown) may be blocked for safety. For package installation, use sudo."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -143,12 +162,12 @@ impl Tool for SystemCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The command to execute (e.g., 'ls', 'apt', 'mv')"
+                    "description": "The base command to execute (e.g., 'sudo', 'ls', 'apt', 'curl'). For package installation, use 'sudo' as command."
                 },
                 "args": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Arguments to pass to the command (e.g., ['-la'] for 'ls -la', or ['update'] for 'apt update')"
+                    "description": "Arguments to pass to the command. For 'sudo apt install nginx', use command='sudo' and args=['apt', 'update'] first, then command='sudo' and args=['apt', 'install', '-y', 'nginx']"
                 },
                 "working_dir": {
                     "type": "string",
@@ -205,9 +224,25 @@ impl Tool for SystemCommandTool {
             .map(PathBuf::from)
             .or_else(|| self.working_dir.clone());
 
-        // Build the command
-        let mut cmd = Command::new(command);
-        cmd.args(&cmd_args);
+        // Build the command using a shell wrapper for better compatibility
+        // This allows shell features like pipes, redirects, and proper PATH resolution
+        let full_command = if cmd_args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, cmd_args.join(" "))
+        };
+
+        // If run_as_user is configured, wrap command with sudo -u <user>
+        let (shell_cmd, shell_args): (&str, Vec<&str>) = if let Some(ref user) = self.run_as_user {
+            // Use sudo -n (non-interactive) -u <user> to run as the agent user
+            // The agent user should have passwordless sudo configured
+            ("sudo", vec!["-n", "-u", user.as_str(), "/bin/sh", "-c", &full_command])
+        } else {
+            ("/bin/sh", vec!["-c", &full_command])
+        };
+
+        let mut cmd = Command::new(shell_cmd);
+        cmd.args(&shell_args);
 
         // Set working directory if specified
         if let Some(ref dir) = working_dir {
@@ -324,11 +359,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_system_command_sudo_denied() {
+    async fn test_system_command_rm_denied() {
         let tool = SystemCommandTool::new();
         let args = serde_json::json!({
-            "command": "sudo",
-            "args": ["apt", "update"]
+            "command": "rm",
+            "args": ["-rf", "/tmp/test"]
         });
 
         let result = tool.execute(args).await.unwrap();

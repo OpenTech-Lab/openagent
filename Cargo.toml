@@ -22,6 +22,10 @@ path = "src/bin/cli.rs"
 name = "openagent-gateway"
 path = "src/bin/gateway.rs"
 
+[[bin]]
+name = "openagent-tui"
+path = "src/bin/tui.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.44", features = ["full"] }

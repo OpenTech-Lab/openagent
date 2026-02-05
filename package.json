@@ -15,6 +15,8 @@
     "onboard": "cargo run --release --bin openagent -- onboard",
     "status": "cargo run --release --bin openagent -- status",
     "chat": "cargo run --release --bin openagent -- chat",
+    "tui": "cargo run --release --bin openagent-tui --",
+    "tui:memory": "cargo run --release --bin openagent-tui -- --memory",
     "models": "cargo run --release --bin openagent -- models",
     "test": "cargo test",
     "test:watch": "cargo watch -x test",

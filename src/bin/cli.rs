@@ -161,6 +161,14 @@ fn read_env_file(path: &Path) -> Result<HashMap<String, String>> {
     let mut env_vars = HashMap::new();
 
     if path.exists() {
+        // Check if it's a directory (common misconfiguration)
+        if path.is_dir() {
+            return Err(Error::Config(format!(
+                "{} is a directory, not a file. Please remove it with: rm -rf {}",
+                path.display(),
+                path.display()
+            )));
+        }
         let file = std::fs::File::open(path)?;
         let reader = io::BufReader::new(file);
 
@@ -188,6 +196,15 @@ fn read_env_file(path: &Path) -> Result<HashMap<String, String>> {
 /// Write .env file with comments preserved where possible
 fn write_env_file(path: &Path, vars: &HashMap<String, String>) -> Result<()> {
     use std::io::Write;
+
+    // Check if it's a directory (common misconfiguration)
+    if path.exists() && path.is_dir() {
+        return Err(Error::Config(format!(
+            "{} is a directory, not a file. Please remove it with: rm -rf {}",
+            path.display(),
+            path.display()
+        )));
+    }
 
     let template = include_str!("../../.env.example");
     let mut output = String::new();
@@ -995,7 +1012,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
                 match start_postgres_docker() {
                     Ok(_) => {
                         env_vars.insert("DATABASE_URL".to_string(), 
-                            "postgres://postgres:postgres@localhost:5432/openagent".to_string());
+                            "postgres://openagent:openagent@localhost:5432/openagent".to_string());
                         println!("   ✅ PostgreSQL started and configured");
                         true
                     }
@@ -1441,7 +1458,8 @@ fn start_postgres_docker() -> Result<()> {
         .args([
             "run", "-d",
             "--name", CONTAINER_NAME,
-            "-e", "POSTGRES_PASSWORD=postgres",
+            "-e", "POSTGRES_USER=openagent",
+            "-e", "POSTGRES_PASSWORD=openagent",
             "-e", "POSTGRES_DB=openagent",
             "-p", "5432:5432",
             "--restart", "unless-stopped",
@@ -1472,7 +1490,7 @@ fn wait_for_postgres() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
         
         let status = std::process::Command::new("docker")
-            .args(["exec", "openagent-postgres", "pg_isready", "-U", "postgres"])
+            .args(["exec", "openagent-postgres", "pg_isready", "-U", "openagent"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
@@ -1578,7 +1596,7 @@ fn configure_postgres_manually(env_vars: &mut HashMap<String, String>) -> Result
     let db_host = prompt_with_default("   Database host", "localhost")?;
     let db_port = prompt_with_default("   Database port", "5432")?;
     let db_name = prompt_with_default("   Database name", "openagent")?;
-    let db_user = prompt_with_default("   Database user", "postgres")?;
+    let db_user = prompt_with_default("   Database user", "openagent")?;
     let db_pass = prompt("   Database password: ")?;
 
     let db_url = format!(

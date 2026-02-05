@@ -105,6 +105,7 @@ docker logs --tail 30 openagent-alice-gateway
 ./docker-setup.sh [agent-name] --start      # Start all services
 ./docker-setup.sh [agent-name] --stop       # Stop all services
 ./docker-setup.sh [agent-name] --clean      # Remove all containers and data
+./docker-setup.sh [agent-name] --tui        # Interactive TUI with tools
 ./docker-setup.sh [agent-name] --cli chat   # Run CLI commands
 ./docker-setup.sh [agent-name] --status     # Show service status
 ./docker-setup.sh --list                    # List all agents
@@ -185,7 +186,53 @@ pnpm openagent soul learn "User prefers TypeScript over JavaScript"
 
 ## 💬 Interactive Chat
 
-Start an interactive chat session with model selection:
+OpenAgent provides two chat interfaces:
+
+### TUI Chat (with Tools) - Standalone
+
+The TUI provides a full agent experience with tool execution. **No gateway, Telegram, or databases required** - it connects directly to OpenRouter:
+
+```bash
+# Local development
+pnpm tui
+
+# Or with Docker (standalone - no DB needed)
+./docker-setup.sh alice --tui
+```
+
+**TUI Features:**
+- 🔧 Full tool access (file read/write, system commands, web search)
+- 📖 Tool execution with visual feedback
+- ⚡ Real-time tool output display
+- 🚀 Standalone - no gateway or databases needed
+- 💾 Optional persistent memory with `--memory` flag
+
+**TUI Commands:**
+| Command | Description |
+|---------|-------------|
+| `/quit` | Exit TUI |
+| `/clear` | Clear conversation history |
+| `/tools` | List available tools |
+| `/model` | Show current model |
+| `/verbose` | Toggle verbose tool output |
+| `/history` | Show conversation history |
+| `/search <query>` | Search memories (requires `--memory`) |
+| `/memory` | Show memory status |
+| `/help` | Show available commands |
+
+**CLI Options:**
+```bash
+openagent-tui [OPTIONS]
+
+  -m, --model <MODEL>  Model to use (overrides .env)
+      --no-tools       Disable tools (chat-only mode)
+  -v, --verbose        Show tool arguments
+      --memory         Enable persistent memory (requires DATABASE_URL)
+```
+
+### Simple Chat (no tools)
+
+Start a simple chat session with model selection:
 
 ```bash
 pnpm openagent chat
@@ -249,8 +296,14 @@ pnpm openagent onboard
 # Initialize .env file
 pnpm openagent init
 
-# Interactive chat
+# Interactive chat (simple)
 pnpm openagent chat
+
+# TUI chat with tools (no persistence)
+pnpm tui
+
+# TUI chat with persistent memory
+pnpm tui:memory
 
 # Browse AI models (fuzzy search)
 pnpm openagent models

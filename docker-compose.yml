@@ -7,6 +7,27 @@
 
 services:
   # ============================================================================
+  # OpenAgent TUI - Standalone interactive chat (no databases needed)
+  # ============================================================================
+  openagent-tui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: openagent-tui
+    stdin_open: true
+    tty: true
+    entrypoint: ["openagent-tui"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SOUL.md:/app/SOUL.md
+      - ./workspace:/app/workspace
+    environment:
+      - RUST_LOG=${RUST_LOG:-warn,openagent=info}
+    networks:
+      - openagent-network
+
+  # ============================================================================
   # OpenAgent CLI - Interactive command-line interface
   # ============================================================================
   openagent-cli:

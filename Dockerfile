@@ -21,6 +21,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/cli.rs && \
     echo "fn main() {}" > src/bin/gateway.rs && \
+    echo "fn main() {}" > src/bin/tui.rs && \
     echo "pub fn dummy() {}" > src/lib.rs
 
 # Build dependencies only (this layer will be cached)
@@ -59,6 +60,7 @@ WORKDIR /app
 # Copy binaries from builder
 COPY --from=builder /app/target/release/openagent /usr/local/bin/openagent
 COPY --from=builder /app/target/release/openagent-gateway /usr/local/bin/openagent-gateway
+COPY --from=builder /app/target/release/openagent-tui /usr/local/bin/openagent-tui
 
 # Copy essential files
 COPY --from=builder /app/SOUL.md /app/SOUL.md

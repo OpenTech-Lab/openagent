@@ -179,7 +179,11 @@ impl AppState {
         dm_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
         dm_tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
         // DM: SystemCommandTool with default denylist (dangerous commands blocked)
-        dm_tools.register(SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone()));
+        // If agent_user is configured, commands run as that user (passwordless sudo)
+        dm_tools.register(SystemCommandTool::with_config(
+            config.sandbox.allowed_dir.clone(),
+            config.sandbox.agent_user.clone(),
+        ));
         dm_tools.register(DuckDuckGoSearchTool::new());
         if let Some(brave) = BraveSearchTool::from_env() {
             info!("Brave Search enabled for DM sessions");
@@ -646,11 +650,12 @@ async fn handle_chat(
     info!("Starting agent loop ({}) with {} tools available", session_label, tool_definitions.len());
 
     // Maximum iterations to prevent infinite loops
-    const MAX_ITERATIONS: u32 = 3;
+    // Increased to support multi-step tasks (e.g., apt update, apt install, service start)
+    const MAX_ITERATIONS: u32 = 20;
     let mut iteration = 0;
     let mut final_response = String::new();
     let mut tool_calls_made = 0u32;
-    const MAX_TOOL_CALLS: u32 = 3;
+    const MAX_TOOL_CALLS: u32 = 20;
 
     // Agentic loop: keep running until LLM stops calling tools
     loop {

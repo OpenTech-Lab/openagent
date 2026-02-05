@@ -29,6 +29,11 @@ pub struct SandboxConfig {
     /// Maximum output size in bytes
     #[serde(default = "default_max_output")]
     pub max_output_bytes: usize,
+    /// Optional user to run agent commands as (for passwordless sudo)
+    /// If set, commands will be run as this user using `sudo -n -u <user>`
+    /// This user should have passwordless sudo configured in /etc/sudoers.d/
+    #[serde(default)]
+    pub agent_user: Option<String>,
 }
 
 impl Default for SandboxConfig {
@@ -41,6 +46,7 @@ impl Default for SandboxConfig {
             os: OsSandboxConfig::default(),
             default_timeout_secs: default_timeout(),
             max_output_bytes: default_max_output(),
+            agent_user: None,
         }
     }
 }

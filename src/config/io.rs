@@ -145,6 +145,9 @@ pub fn load_config_from_env() -> Result<Config> {
             config.sandbox.execution_env = exec_env;
         }
     }
+    if let Ok(allowed_dir) = std::env::var("ALLOWED_DIR") {
+        config.sandbox.allowed_dir = std::path::PathBuf::from(allowed_dir);
+    }
 
     // Load gateway config
     if let Ok(port) = std::env::var("GATEWAY_PORT") {

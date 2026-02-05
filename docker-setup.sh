@@ -190,6 +190,28 @@ generate_compose_file() {
 
 services:
   # ============================================================================
+  # OpenAgent TUI - Standalone interactive chat (no databases needed)
+  # ============================================================================
+  ${AGENT_NAME}-tui:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: openagent-${AGENT_NAME}-tui
+    stdin_open: true
+    tty: true
+    entrypoint: ["openagent-tui"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./SOUL.md:/app/SOUL.md:rw
+      - ./workspace:/app/workspace:rw
+    environment:
+      - RUST_LOG=\${RUST_LOG:-warn,openagent=info}
+      - AGENT_NAME=${AGENT_NAME}
+    networks:
+      - openagent-${AGENT_NAME}-network
+
+  # ============================================================================
   # OpenAgent CLI - Interactive command-line interface
   # ============================================================================
   ${AGENT_NAME}-cli:
@@ -552,6 +574,7 @@ show_usage() {
     echo "  --clean          Stop and remove all containers and data"
     echo "  --status         Show service status"
     echo "  --cli [CMD]      Run CLI command (e.g., --cli chat)"
+    echo "  --tui            Start interactive TUI chat (with tools)"
     echo "  --list           List all registered agents"
     echo "  --help           Show this help message"
     echo ""
@@ -559,6 +582,7 @@ show_usage() {
     echo "  $0 alice                    # Create and setup agent 'alice'"
     echo "  $0 alice --start            # Start agent 'alice' services"
     echo "  $0 alice --cli chat         # Run chat for agent 'alice'"
+    echo "  $0 alice --tui              # Interactive TUI with tools"
     echo "  $0 bob                      # Create another agent 'bob'"
     echo "  $0 --list                   # List all agents"
     echo "  $0                          # Setup default (single) agent"
@@ -657,6 +681,9 @@ main() {
                 --list)
                     action="list"
                     ;;
+                --tui)
+                    action="tui"
+                    ;;
                 --cli)
                     action="cli"
                     in_cli=true
@@ -688,7 +715,7 @@ main() {
     if [ -n "$AGENT_NAME" ]; then
         local agent_dir=$(get_agent_dir)
         case "$action" in
-            start|stop|clean|status|cli|build)
+            start|stop|clean|status|cli|tui|build)
                 # These actions require the agent to already exist
                 if [ ! -d "$agent_dir" ]; then
                     error "Agent '${AGENT_NAME}' does not exist"
@@ -744,6 +771,14 @@ main() {
                 $COMPOSE_CMD run --rm openagent-cli "${cli_args[@]}"
             fi
             ;;
+        tui)
+            step "Starting TUI chat interface (standalone - no gateway needed)..."
+            if [ -n "$AGENT_NAME" ]; then
+                compose run --rm --no-deps ${AGENT_NAME}-tui
+            else
+                $COMPOSE_CMD run --rm --no-deps openagent-tui
+            fi
+            ;;
         "")
             # Full setup
             setup_env
@@ -756,14 +791,16 @@ main() {
             if [ -n "$AGENT_NAME" ]; then
                 info "Agent '${AGENT_NAME}' is ready!"
                 echo "   • Start gateway:      ./docker-setup.sh ${AGENT_NAME} --start"
-                echo "   • Run chat:           ./docker-setup.sh ${AGENT_NAME} --cli chat"
+                echo "   • Run TUI chat:       ./docker-setup.sh ${AGENT_NAME} --tui"
+                echo "   • Run CLI chat:       ./docker-setup.sh ${AGENT_NAME} --cli chat"
                 echo "   • Check status:       ./docker-setup.sh ${AGENT_NAME} --status"
                 echo "   • View logs:          docker compose -f $(get_compose_file) logs -f"
                 echo "   • List all agents:    ./docker-setup.sh --list"
             else
                 info "Next steps:"
                 echo "   • Start the gateway:  ./docker-setup.sh --start"
-                echo "   • Run chat:           ./docker-setup.sh --cli chat"
+                echo "   • Run TUI chat:       ./docker-setup.sh --tui"
+                echo "   • Run CLI chat:       ./docker-setup.sh --cli chat"
                 echo "   • Check status:       ./docker-setup.sh --status"
                 echo "   • View logs:          docker compose logs -f"
             fi
