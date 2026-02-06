@@ -10,6 +10,7 @@ use openagent::agent::{
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use openagent::config::Config;
+use openagent::config::DmPolicy;
 use openagent::database::init_pool;
 use openagent::memory::{EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::sandbox::{create_executor, CodeExecutor, ExecutionRequest, Language};
@@ -366,9 +367,22 @@ async fn message_handler(
 
     // For DMs, check if user is approved (pairing system)
     if session_type == SessionType::DirectMessage {
-        let is_approved = state.pairing.read().await.is_approved(user_id);
+        let dm_policy = state.config.channels.telegram
+            .as_ref()
+            .map(|t| t.dm_policy)
+            .unwrap_or(DmPolicy::Open);
 
-        if !is_approved {
+        let needs_pairing = match dm_policy {
+            DmPolicy::Open => false,
+            DmPolicy::Disabled => {
+                bot.send_message(chat_id, "❌ DMs are disabled for this bot.")
+                    .await?;
+                return Ok(());
+            }
+            _ => !state.pairing.read().await.is_approved(user_id),
+        };
+
+        if needs_pairing {
             // Check if this is an admin command that doesn't require approval
             if let Some(text) = msg.text() {
                 if !text.starts_with('/') {

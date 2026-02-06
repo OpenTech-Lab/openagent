@@ -99,7 +99,7 @@ pub fn load_config_from_env() -> Result<Config> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            dm_policy: super::types::channel::DmPolicy::default(),
+            dm_policy: super::types::channel::DmPolicy::Open,
             groups: std::collections::HashMap::new(),
             use_long_polling: std::env::var("TELEGRAM_USE_WEBHOOK")
                 .map(|v| v != "true" && v != "1")
