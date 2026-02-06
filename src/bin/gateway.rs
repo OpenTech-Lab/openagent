@@ -682,11 +682,11 @@ async fn handle_chat(
 
     // Maximum iterations to prevent infinite loops
     // Increased to support multi-step tasks (e.g., apt update, apt install, service start)
-    const MAX_ITERATIONS: u32 = 20;
+    const MAX_ITERATIONS: u32 = 999;
     let mut iteration = 0;
     let mut final_response = String::new();
     let mut tool_calls_made = 0u32;
-    const MAX_TOOL_CALLS: u32 = 20;
+    const MAX_TOOL_CALLS: u32 = 999;
 
     // Agentic loop: keep running until LLM stops calling tools
     loop {
