@@ -72,7 +72,7 @@ fn default_openrouter_url() -> String {
 }
 
 fn default_timeout() -> u64 {
-    120
+    300
 }
 
 fn default_retries() -> u32 {

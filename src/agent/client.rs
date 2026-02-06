@@ -58,7 +58,7 @@ impl OpenRouterClient {
 
         let client = Client::builder()
             .default_headers(headers)
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()?;
 
         Ok(OpenRouterClient {
@@ -127,50 +127,98 @@ impl OpenRouterClient {
         self.send_request(request).await
     }
 
-    /// Send a request to the OpenRouter API
+    /// Send a request to the OpenRouter API (with retries for transient errors)
     async fn send_request(&self, request: ChatCompletionRequest) -> Result<ChatCompletionResponse> {
         let url = format!("{}/chat/completions", self.config.base_url);
+        let max_retries = self.config.max_retries;
 
-        debug!("Sending request to OpenRouter: model={}", request.model);
+        for attempt in 0..=max_retries {
+            debug!("Sending request to OpenRouter: model={} (attempt {}/{})",
+                request.model, attempt + 1, max_retries + 1);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?;
+            let result = self
+                .client
+                .post(&url)
+                .json(&request)
+                .send()
+                .await;
 
-        // Update rate limit state from headers
-        self.update_rate_limit(&response).await;
+            let response = match result {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // Retry on timeout or connection errors
+                    if attempt < max_retries && (e.is_timeout() || e.is_connect()) {
+                        let wait = std::time::Duration::from_secs(2u64.pow(attempt));
+                        warn!("Request failed (attempt {}/{}): {}. Retrying in {:?}...",
+                            attempt + 1, max_retries + 1, e, wait);
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
+                    return Err(Error::OpenRouter(format!("HTTP error: {}", e)));
+                }
+            };
 
-        let status = response.status();
+            // Update rate limit state from headers
+            self.update_rate_limit(&response).await;
 
-        if status.is_success() {
-            let body = response.json::<ChatCompletionResponse>().await?;
+            let status = response.status();
 
-            if let Some(ref usage) = body.usage {
-                info!(
-                    "OpenRouter response: model={}, tokens={}",
-                    body.model, usage.total_tokens
-                );
-            }
-
-            Ok(body)
-        } else {
-            let error_text = response.text().await.unwrap_or_default();
-
-            if status.as_u16() == 429 {
-                warn!("Rate limit exceeded: {}", error_text);
-                Err(Error::RateLimit(error_text))
-            } else if status.as_u16() == 401 {
-                Err(Error::Unauthorized("Invalid API key".to_string()))
+            if status.is_success() {
+                match response.json::<ChatCompletionResponse>().await {
+                    Ok(body) => {
+                        if let Some(ref usage) = body.usage {
+                            info!(
+                                "OpenRouter response: model={}, tokens={}",
+                                body.model, usage.total_tokens
+                            );
+                        }
+                        return Ok(body);
+                    }
+                    Err(e) => {
+                        // Retry on body decode errors (often caused by partial response / timeout)
+                        if attempt < max_retries {
+                            let wait = std::time::Duration::from_secs(2u64.pow(attempt));
+                            warn!("Failed to decode response body (attempt {}/{}): {}. Retrying in {:?}...",
+                                attempt + 1, max_retries + 1, e, wait);
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                        return Err(Error::OpenRouter(format!("error decoding response body: {}", e)));
+                    }
+                }
             } else {
-                Err(Error::OpenRouter(format!(
-                    "API error ({}): {}",
-                    status, error_text
-                )))
+                let error_text = response.text().await.unwrap_or_default();
+
+                if status.as_u16() == 429 {
+                    // Rate limit - retry with exponential backoff
+                    if attempt < max_retries {
+                        let wait = std::time::Duration::from_secs(2u64.pow(attempt + 1));
+                        warn!("Rate limit hit (attempt {}/{}): {}. Retrying in {:?}...",
+                            attempt + 1, max_retries + 1, error_text, wait);
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
+                    return Err(Error::RateLimit(error_text));
+                } else if status.as_u16() == 401 {
+                    return Err(Error::Unauthorized("Invalid API key".to_string()));
+                } else if status.is_server_error() && attempt < max_retries {
+                    // 5xx errors - retry
+                    let wait = std::time::Duration::from_secs(2u64.pow(attempt));
+                    warn!("Server error {} (attempt {}/{}): {}. Retrying in {:?}...",
+                        status, attempt + 1, max_retries + 1, error_text, wait);
+                    tokio::time::sleep(wait).await;
+                    continue;
+                } else {
+                    return Err(Error::OpenRouter(format!(
+                        "API error ({}): {}",
+                        status, error_text
+                    )));
+                }
             }
         }
+
+        // Should not reach here, but just in case
+        Err(Error::OpenRouter("Max retries exceeded".to_string()))
     }
 
     /// Update rate limit state from response headers
