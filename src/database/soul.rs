@@ -125,6 +125,14 @@ impl SoulStore {
         Ok(())
     }
 
+    /// Delete all soul sections (used for reset)
+    pub async fn delete_all(&self) -> Result<()> {
+        sqlx::query("DELETE FROM agent_soul_sections")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Reconstruct the full soul markdown from all sections
     pub async fn render_full_soul(&self) -> Result<String> {
         let sections = self.get_all_sections().await?;

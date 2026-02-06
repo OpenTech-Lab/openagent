@@ -163,22 +163,46 @@ pnpm openagent
 
 ## 🧠 Agent Soul
 
-OpenAgent uses a `SOUL.md` file to define the agent's personality and behavior. This file is loaded as part of the system prompt and can be:
+OpenAgent uses a `SOUL.md` file to define the agent's personality and behavior. On first startup, the soul is persisted to the database where it evolves over time — the scheduler periodically summarizes conversations and updates mutable sections automatically.
 
-- **Viewed/Edited** via CLI: `pnpm openagent soul edit`
-- **Updated during chat**: Use `/soul` command in interactive chat
-- **Learned from conversations**: The agent can remember preferences
+**Soul sections have two types:**
+- **Immutable** (🔒): Identity, Core Values, Boundaries — locked forever after initialization
+- **Mutable** (✏️): Personality Traits, Communication Style, Memory & Learning, etc. — evolve with conversations
+
+### Soul CLI Commands
 
 ```bash
-# View the soul
+# View the soul (shows DB sections with version numbers and mutability indicators)
 pnpm openagent soul view
 
-# Edit in your default editor
+# Edit in your default editor (mutable changes sync to DB automatically)
 pnpm openagent soul edit
 
-# Add a learned preference
+# Reset soul to default (resets both SOUL.md file and database)
+pnpm openagent soul reset
+
+# Add a learned preference (updates both file and DB)
 pnpm openagent soul learn "User prefers TypeScript over JavaScript"
+
+# View and manage scheduler settings (interval, summarization, task processing)
+pnpm openagent soul scheduler
 ```
+
+When a database is connected, `soul view` shows each section with its version number, mutability status, and the current scheduler configuration. If no database is available, commands fall back to the file-based `SOUL.md`.
+
+### Scheduler Configuration
+
+The scheduler runs periodically (default: every 30 minutes) and:
+1. Summarizes active conversations, updating the soul's mutable sections
+2. Picks up and processes pending tasks if the agent is idle
+
+Configure via `openagent soul scheduler`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `interval_minutes` | `30` | How often the scheduler ticks |
+| `summarization_enabled` | `true` | Periodic conversation summarization |
+| `task_processing_enabled` | `true` | Autonomous task processing when idle |
 
 ---
 
@@ -306,8 +330,8 @@ pnpm tui:memory
 # Browse AI models (fuzzy search)
 pnpm openagent models
 
-# View/edit agent soul
-pnpm openagent soul [view|edit|reset|learn]
+# View/edit agent soul and scheduler
+pnpm openagent soul [view|edit|reset|learn|scheduler]
 
 # Check service status
 pnpm openagent status

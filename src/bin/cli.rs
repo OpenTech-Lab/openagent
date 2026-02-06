@@ -6,7 +6,10 @@ use clap::{Parser, Subcommand};
 use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input, MultiSelect, Password, Select};
 use openagent::config::{Config, ExecutionEnv};
-use openagent::database::{init_pool, init_pool_for_migrations, migrations};
+use openagent::database::{
+    init_pool, init_pool_for_migrations, migrations,
+    ConfigParamStore, ConfigValueType, PostgresPool, SoulStore,
+};
 use openagent::{Error, Result, VERSION};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
@@ -101,6 +104,8 @@ enum SoulAction {
         /// The preference or fact to remember
         text: String,
     },
+    /// View and manage scheduler settings
+    Scheduler,
 }
 
 #[tokio::main]
@@ -125,7 +130,7 @@ async fn main() -> Result<()> {
         Some(Commands::Models) => list_models().await,
         Some(Commands::InitConfig) => init_config(),
         Some(Commands::Chat { model }) => interactive_chat(model).await,
-        Some(Commands::Soul { action }) => manage_soul(action),
+        Some(Commands::Soul { action }) => manage_soul(action).await,
         None => interactive_main_menu().await,
     }
 }
@@ -395,7 +400,7 @@ async fn interactive_main_menu() -> Result<()> {
                 let _ = io::stdin().read_line(&mut String::new());
             }
             1 => {
-                manage_soul(None)?;
+                manage_soul(None).await?;
                 println!("\nPress Enter to continue...");
                 let _ = io::stdin().read_line(&mut String::new());
             }
@@ -1796,7 +1801,7 @@ async fn interactive_chat(model: Option<String>) -> Result<()> {
                     continue;
                 }
                 "/soul" | "/s" => {
-                    manage_soul(None)?;
+                    manage_soul(None).await?;
                     // Reload the soul after editing
                     let soul = openagent::agent::prompts::Soul::load_or_default();
                     conversation = Conversation::new("cli-user", &current_model)
@@ -1859,8 +1864,15 @@ async fn interactive_chat(model: Option<String>) -> Result<()> {
 // Soul Management
 // ============================================================================
 
+/// Try to get a database pool (returns None if PostgreSQL is not configured)
+async fn get_db_pool() -> Option<PostgresPool> {
+    let config = Config::from_env().ok()?;
+    let pg = config.storage.postgres.as_ref()?;
+    init_pool(pg).await.ok()
+}
+
 /// Manage the agent's soul (personality configuration)
-fn manage_soul(action: Option<SoulAction>) -> Result<()> {
+async fn manage_soul(action: Option<SoulAction>) -> Result<()> {
     let action = action.unwrap_or_else(|| {
         // Interactive menu if no action specified
         let options = &[
@@ -1868,10 +1880,11 @@ fn manage_soul(action: Option<SoulAction>) -> Result<()> {
             "✏️  Edit soul in editor",
             "🔄 Reset to default",
             "💡 Add learned preference",
+            "⏰ Scheduler settings",
             "🔙 Cancel",
         ];
 
-        match prompt_menu("Soul Management:", options, 0).unwrap_or(4) {
+        match prompt_menu("Soul Management:", options, 0).unwrap_or(5) {
             0 => SoulAction::View,
             1 => SoulAction::Edit,
             2 => SoulAction::Reset,
@@ -1879,20 +1892,22 @@ fn manage_soul(action: Option<SoulAction>) -> Result<()> {
                 let text = prompt("Enter preference to learn: ").unwrap_or_default();
                 SoulAction::Learn { text }
             }
+            4 => SoulAction::Scheduler,
             _ => SoulAction::View,
         }
     });
 
     match action {
-        SoulAction::View => view_soul(),
-        SoulAction::Edit => edit_soul(),
-        SoulAction::Reset => reset_soul(),
-        SoulAction::Learn { text } => learn_preference(&text),
+        SoulAction::View => view_soul().await,
+        SoulAction::Edit => edit_soul().await,
+        SoulAction::Reset => reset_soul().await,
+        SoulAction::Learn { text } => learn_preference(&text).await,
+        SoulAction::Scheduler => manage_scheduler().await,
     }
 }
 
-/// View the current soul
-fn view_soul() -> Result<()> {
+/// View the current soul (DB-aware with file fallback)
+async fn view_soul() -> Result<()> {
     use openagent::agent::prompts::Soul;
 
     println!();
@@ -1901,9 +1916,70 @@ fn view_soul() -> Result<()> {
     println!("{}", style("╚══════════════════════════════════════════════════════════════╝").magenta());
     println!();
 
+    // Try DB first
+    if let Some(pool) = get_db_pool().await {
+        let soul_store = SoulStore::new(pool.clone());
+        if soul_store.is_initialized().await.unwrap_or(false) {
+            let sections = soul_store.get_all_sections().await?;
+
+            println!("   {} Loaded from database ({} sections)\n", style("📦").bold(), sections.len());
+
+            for section in &sections {
+                let mutability = if section.is_mutable {
+                    style("✏️  mutable").green()
+                } else {
+                    style("🔒 immutable").red()
+                };
+                println!("{} [v{} | {}]",
+                    style(format!("## {}", section.section_name)).cyan().bold(),
+                    section.version,
+                    mutability,
+                );
+                println!();
+                for line in section.content.lines() {
+                    if line.starts_with("### ") {
+                        println!("{}", style(line).yellow());
+                    } else if line.starts_with("- ") || line.starts_with("* ") {
+                        println!("  {}", line);
+                    } else {
+                        println!("{}", line);
+                    }
+                }
+                println!();
+            }
+
+            // Show scheduler config
+            let config_store = ConfigParamStore::new(pool);
+            println!("{}", style("─".repeat(60)).dim());
+            println!("{}", style("⏰ Scheduler Configuration").cyan().bold());
+            println!();
+            let interval = config_store.get("scheduler", "interval_minutes").await
+                .ok().flatten().map(|p| p.value).unwrap_or_else(|| "30".to_string());
+            let summarization = config_store.get("scheduler", "summarization_enabled").await
+                .ok().flatten().map(|p| p.value).unwrap_or_else(|| "true".to_string());
+            let task_processing = config_store.get("scheduler", "task_processing_enabled").await
+                .ok().flatten().map(|p| p.value).unwrap_or_else(|| "true".to_string());
+            println!("   Interval:          {} minutes", style(&interval).cyan());
+            println!("   Summarization:     {}", if summarization == "true" { style("enabled").green() } else { style("disabled").red() });
+            println!("   Task processing:   {}", if task_processing == "true" { style("enabled").green() } else { style("disabled").red() });
+            println!();
+
+            println!("{}", style("─".repeat(60)).dim());
+            println!("   {} Edit with: {} | Scheduler: {}",
+                style("💡").bold(),
+                style("openagent soul edit").cyan(),
+                style("openagent soul scheduler").cyan());
+            println!();
+
+            return Ok(());
+        }
+    }
+
+    // Fallback: file-based view
     let soul = Soul::load_or_default();
-    
-    // Pretty print the soul content
+
+    println!("   {} Loaded from SOUL.md (no database connection)\n", style("📄").bold());
+
     for line in soul.content.lines() {
         if line.starts_with("# ") {
             println!("{}", style(line).magenta().bold());
@@ -1922,7 +1998,7 @@ fn view_soul() -> Result<()> {
 
     println!();
     println!("{}", style("─".repeat(60)).dim());
-    println!("   {} Edit with: {} or {}", 
+    println!("   {} Edit with: {} or {}",
         style("💡").bold(),
         style("openagent soul edit").cyan(),
         style("pnpm openagent soul edit").cyan());
@@ -1931,8 +2007,8 @@ fn view_soul() -> Result<()> {
     Ok(())
 }
 
-/// Edit the soul in the default editor
-fn edit_soul() -> Result<()> {
+/// Edit the soul in the default editor, then sync mutable sections to DB
+async fn edit_soul() -> Result<()> {
     use openagent::agent::prompts::{Soul, SOUL_FILE_PATH};
 
     // Ensure SOUL.md exists
@@ -1964,33 +2040,80 @@ fn edit_soul() -> Result<()> {
         .status()
         .map_err(|e| Error::Config(format!("Failed to open editor: {}", e)))?;
 
-    if status.success() {
-        println!("   {} Soul updated!", style("✓").green());
-    } else {
+    if !status.success() {
         println!("   {} Editor exited with error", style("⚠").yellow());
+        return Ok(());
+    }
+
+    println!("   {} Soul file updated!", style("✓").green());
+
+    // Sync mutable sections to DB if available
+    if let Some(pool) = get_db_pool().await {
+        let soul_store = SoulStore::new(pool);
+        if soul_store.is_initialized().await.unwrap_or(false) {
+            let content = std::fs::read_to_string(SOUL_FILE_PATH)
+                .map_err(|e| Error::Config(format!("Failed to read SOUL.md: {}", e)))?;
+
+            // Parse sections from file
+            let sections = parse_soul_sections_from_content(&content);
+            let mut synced = 0;
+            let mut skipped_immutable = Vec::new();
+
+            for (name, body) in &sections {
+                match soul_store.update_section(name, body).await {
+                    Ok(()) => synced += 1,
+                    Err(_) => {
+                        // Section is immutable or doesn't exist — note it
+                        skipped_immutable.push(name.clone());
+                    }
+                }
+            }
+
+            if synced > 0 {
+                println!("   {} Synced {} mutable section(s) to database", style("✓").green(), synced);
+            }
+            if !skipped_immutable.is_empty() {
+                println!("   {} Skipped immutable sections (DB unchanged): {}",
+                    style("🔒").bold(),
+                    skipped_immutable.join(", "));
+            }
+        }
     }
 
     Ok(())
 }
 
-/// Reset soul to default
-fn reset_soul() -> Result<()> {
+/// Reset soul to default (file + DB)
+async fn reset_soul() -> Result<()> {
     use openagent::agent::prompts::Soul;
 
     println!();
-    if prompt_yes_no("   Are you sure you want to reset SOUL.md to default?", false)? {
-        let soul = Soul::default();
-        soul.save()?;
-        println!("   {} Soul reset to default!", style("✓").green());
-    } else {
+    if !prompt_yes_no("   Are you sure you want to reset the soul to default?", false)? {
         println!("   {} Cancelled.", style("ℹ").blue());
+        return Ok(());
     }
 
+    // Reset file
+    let soul = Soul::default();
+    soul.save()?;
+    println!("   {} SOUL.md reset to default", style("✓").green());
+
+    // Reset DB if available
+    if let Some(pool) = get_db_pool().await {
+        let soul_store = SoulStore::new(pool);
+        if soul_store.is_initialized().await.unwrap_or(false) {
+            soul_store.delete_all().await?;
+            soul_store.initialize_from_content(&soul.content).await?;
+            println!("   {} Database soul sections reset and re-initialized", style("✓").green());
+        }
+    }
+
+    println!();
     Ok(())
 }
 
-/// Learn a new preference
-fn learn_preference(text: &str) -> Result<()> {
+/// Learn a new preference (file + DB)
+async fn learn_preference(text: &str) -> Result<()> {
     use openagent::agent::prompts::Soul;
 
     if text.is_empty() {
@@ -1998,13 +2121,152 @@ fn learn_preference(text: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Update file
     let mut soul = Soul::load_or_default();
     soul.add_preference(text)?;
-    
+
     println!();
     println!("   {} Learned: \"{}\"", style("🧠").bold(), style(text).cyan());
     println!("   {} Saved to SOUL.md", style("✓").green());
+
+    // Update DB if available
+    if let Some(pool) = get_db_pool().await {
+        let soul_store = SoulStore::new(pool);
+        if soul_store.is_initialized().await.unwrap_or(false) {
+            if let Ok(Some(section)) = soul_store.get_section("Memory & Learning").await {
+                let mut content = section.content.clone();
+
+                if content.contains("_None learned yet._") || content.contains("None learned yet") {
+                    content = content.replace("_None learned yet._", &format!("- {}", text));
+                    content = content.replace("None learned yet", &format!("- {}", text));
+                } else if let Some(pos) = content.find("### User Preferences") {
+                    let after = &content[pos..];
+                    let insert_pos = after.find("\n### ")
+                        .map(|p| pos + p)
+                        .unwrap_or(content.len());
+                    content.insert_str(insert_pos, &format!("\n- {}", text));
+                } else {
+                    content.push_str(&format!("\n- {}", text));
+                }
+
+                match soul_store.update_section("Memory & Learning", &content).await {
+                    Ok(()) => println!("   {} Synced to database", style("✓").green()),
+                    Err(e) => println!("   {} DB sync failed: {}", style("⚠").yellow(), e),
+                }
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Manage scheduler settings (view/update config params)
+async fn manage_scheduler() -> Result<()> {
+    let pool = match get_db_pool().await {
+        Some(p) => p,
+        None => {
+            println!("   {} PostgreSQL not configured. Scheduler settings require a database.", style("⚠").yellow());
+            return Ok(());
+        }
+    };
+
+    let config_store = ConfigParamStore::new(pool);
+
+    println!();
+    println!("{}", style("╔══════════════════════════════════════════════════╗").cyan());
+    println!("{}", style("║          ⏰ Scheduler Configuration               ║").cyan());
+    println!("{}", style("╚══════════════════════════════════════════════════╝").cyan());
+    println!();
+
+    // Load current values
+    let current_interval = config_store.get("scheduler", "interval_minutes").await?
+        .map(|p| p.value).unwrap_or_else(|| "30".to_string());
+    let current_summarization = config_store.get("scheduler", "summarization_enabled").await?
+        .map(|p| p.value).unwrap_or_else(|| "true".to_string());
+    let current_task_processing = config_store.get("scheduler", "task_processing_enabled").await?
+        .map(|p| p.value).unwrap_or_else(|| "true".to_string());
+
+    println!("   Current settings:");
+    println!("   {} Interval:          {} minutes", style("1.").dim(), style(&current_interval).cyan());
+    println!("   {} Summarization:     {}", style("2.").dim(),
+        if current_summarization == "true" { style("enabled").green() } else { style("disabled").red() });
+    println!("   {} Task processing:   {}", style("3.").dim(),
+        if current_task_processing == "true" { style("enabled").green() } else { style("disabled").red() });
+    println!();
+
+    // Interval
+    let new_interval = prompt_with_default(
+        "   Scheduler interval (minutes)",
+        &current_interval,
+    )?;
+    if new_interval != current_interval {
+        config_store.upsert(
+            "scheduler", "interval_minutes", &new_interval,
+            ConfigValueType::Number, false, Some("Scheduler tick interval in minutes"),
+        ).await?;
+        println!("   {} Interval updated to {} minutes", style("✓").green(), &new_interval);
+    }
+
+    // Summarization
+    let summarization_options = &["enabled", "disabled"];
+    let summarization_default = if current_summarization == "true" { 0 } else { 1 };
+    let summarization_choice = prompt_menu("   Conversation summarization:", summarization_options, summarization_default)?;
+    let new_summarization = if summarization_choice == 0 { "true" } else { "false" };
+    if new_summarization != current_summarization {
+        config_store.upsert(
+            "scheduler", "summarization_enabled", new_summarization,
+            ConfigValueType::Boolean, false, Some("Enable periodic conversation summarization"),
+        ).await?;
+        println!("   {} Summarization {}", style("✓").green(),
+            if new_summarization == "true" { "enabled" } else { "disabled" });
+    }
+
+    // Task processing
+    let task_options = &["enabled", "disabled"];
+    let task_default = if current_task_processing == "true" { 0 } else { 1 };
+    let task_choice = prompt_menu("   Autonomous task processing:", task_options, task_default)?;
+    let new_task_processing = if task_choice == 0 { "true" } else { "false" };
+    if new_task_processing != current_task_processing {
+        config_store.upsert(
+            "scheduler", "task_processing_enabled", new_task_processing,
+            ConfigValueType::Boolean, false, Some("Enable autonomous task processing when idle"),
+        ).await?;
+        println!("   {} Task processing {}", style("✓").green(),
+            if new_task_processing == "true" { "enabled" } else { "disabled" });
+    }
+
+    println!();
+    println!("   {} Changes take effect on the next scheduler tick.", style("ℹ").blue());
+    println!("   {} Restart the gateway to apply immediately.", style("💡").bold());
     println!();
 
     Ok(())
+}
+
+/// Parse SOUL.md content into (section_name, body) pairs by splitting on `## ` headers.
+/// Helper for edit_soul() DB sync.
+fn parse_soul_sections_from_content(content: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_body = String::new();
+
+    for line in content.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            if let Some(name) = current_name.take() {
+                sections.push((name, current_body.trim().to_string()));
+            }
+            current_name = Some(header.trim().to_string());
+            current_body = String::new();
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+
+    if let Some(name) = current_name {
+        sections.push((name, current_body.trim().to_string()));
+    }
+
+    sections
 }
