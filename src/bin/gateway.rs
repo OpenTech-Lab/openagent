@@ -10,7 +10,8 @@ use openagent::agent::{
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use openagent::config::Config;
-use openagent::database::{init_pool, MemoryStore, OpenSearchClient};
+use openagent::database::init_pool;
+use openagent::memory::{EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::sandbox::{create_executor, CodeExecutor, ExecutionRequest, Language};
 use openagent::{Error, Result};
 
@@ -120,7 +121,7 @@ struct AppState {
     config: Config,
     llm_client: OpenRouterClient,
     conversations: RwLock<ConversationManager>,
-    memory_store: Option<MemoryStore>,
+    memory_retriever: Option<MemoryRetriever>,
     executor: Box<dyn CodeExecutor>,
     /// Tools for DM sessions (full access)
     dm_tools: ToolRegistry,
@@ -143,22 +144,22 @@ impl AppState {
         let conversations = ConversationManager::new(&openrouter_config.default_model)
             .with_system_prompt(DEFAULT_SYSTEM_PROMPT);
 
-        // Try to initialize database (optional)
-        let memory_store = match &config.storage.postgres {
+        // Try to initialize database + memory retriever (optional)
+        let memory_retriever = match &config.storage.postgres {
             Some(db_config) => match init_pool(db_config).await {
                 Ok(pool) => {
-                    // Try to initialize OpenSearch
-                    let opensearch = match &config.storage.opensearch {
-                        Some(os_config) => match OpenSearchClient::new(os_config).await {
-                            Ok(os) => Some(os),
-                            Err(e) => {
-                                warn!("OpenSearch not available: {}. Using PostgreSQL only.", e);
-                                None
-                            }
-                        },
-                        None => None,
-                    };
-                    Some(MemoryStore::new(pool, opensearch))
+                    let store = openagent::database::MemoryStore::new(pool);
+                    match EmbeddingService::new() {
+                        Ok(embedding) => {
+                            let cache = MemoryCache::new();
+                            info!("Memory retriever initialized (embedding + cache + PG)");
+                            Some(MemoryRetriever::new(store, embedding, cache))
+                        }
+                        Err(e) => {
+                            warn!("Embedding service failed: {}. Running without memory retrieval.", e);
+                            None
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!("Database not available: {}. Running without persistence.", e);
@@ -230,7 +231,7 @@ impl AppState {
             config,
             llm_client,
             conversations: RwLock::new(conversations),
-            memory_store,
+            memory_retriever,
             executor,
             dm_tools,
             group_tools,
@@ -542,7 +543,7 @@ async fn handle_command(
                 default_model,
                 session_info,
                 state.config.sandbox.execution_env,
-                if state.memory_store.is_some() { "Connected" } else { "Not connected" },
+                if state.memory_retriever.is_some() { "Connected" } else { "Not connected" },
                 tools.count()
             );
             bot.send_message(chat_id, status)
@@ -638,6 +639,20 @@ async fn handle_chat(
         conv.add_user_message(text);
         conv.get_api_messages()
     };
+
+    // Inject relevant memories into system prompt
+    if let Some(ref retriever) = state.memory_retriever {
+        match retriever.retrieve(user_id, text, 5).await {
+            Ok(memory_context) if !memory_context.is_empty() => {
+                if let Some(sys) = messages.iter_mut().find(|m| m.role == openagent::agent::Role::System) {
+                    sys.content.push_str(&memory_context);
+                    info!("Injected memory context ({} chars) for user={}", memory_context.len(), user_id);
+                }
+            }
+            Err(e) => warn!("Memory retrieval failed: {}", e),
+            _ => {}
+        }
+    }
 
     // Get tool definitions based on session type
     let tools = state.tools_for_session(session_type);
@@ -740,8 +755,8 @@ async fn handle_chat(
                     // Add the assistant message with tool calls to context
                     messages.push(choice.message.clone());
 
-                    // Execute each tool call (limit to first 2 per iteration)
-                    for tool_call in tool_calls.iter().take(2) {
+                    // Execute each tool call
+                    for tool_call in tool_calls.iter() {
                         tool_calls_made += 1;
 
                         let tool_name = &tool_call.function.name;

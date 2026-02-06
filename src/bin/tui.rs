@@ -2,7 +2,7 @@
 //!
 //! A local development interface for testing the agent without Telegram.
 //! Provides full DM-level access to tools in a REPL environment.
-//! Optionally connects to PostgreSQL/OpenSearch for persistent memory.
+//! Optionally connects to PostgreSQL for persistent memory.
 
 use openagent::agent::{
     Conversation, GenerationOptions, Message as AgentMessage, Role,
@@ -11,7 +11,8 @@ use openagent::agent::{
     prompts::Soul,
 };
 use openagent::config::Config;
-use openagent::database::{init_pool, MemoryStore, OpenSearchClient, Memory};
+use openagent::database::{init_pool, Memory};
+use openagent::memory::{EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::{Error, Result};
 
 use clap::Parser;
@@ -52,7 +53,7 @@ struct TuiState {
     current_model: String,
     verbose: bool,
     tools_enabled: bool,
-    memory_store: Option<MemoryStore>,
+    memory_retriever: Option<MemoryRetriever>,
     user_id: String,
 }
 
@@ -80,27 +81,23 @@ impl TuiState {
         let conversation = Conversation::new(&user_id, &current_model)
             .with_system_prompt(&system_prompt);
 
-        // Initialize memory store if requested
-        let memory_store = if args.memory {
+        // Initialize memory retriever if requested
+        let memory_retriever = if args.memory {
             match &config.storage.postgres {
                 Some(db_config) => match init_pool(db_config).await {
                     Ok(pool) => {
-                        info!("Connected to PostgreSQL for persistent memory");
-                        // Try to initialize OpenSearch
-                        let opensearch = match &config.storage.opensearch {
-                            Some(os_config) => match OpenSearchClient::new(os_config).await {
-                                Ok(os) => {
-                                    info!("Connected to OpenSearch for full-text search");
-                                    Some(os)
-                                }
-                                Err(e) => {
-                                    warn!("OpenSearch not available: {}. Using PostgreSQL only.", e);
-                                    None
-                                }
-                            },
-                            None => None,
-                        };
-                        Some(MemoryStore::new(pool, opensearch))
+                        let store = openagent::database::MemoryStore::new(pool);
+                        match EmbeddingService::new() {
+                            Ok(embedding) => {
+                                let cache = MemoryCache::new();
+                                info!("Memory retriever initialized (embedding + cache + PG)");
+                                Some(MemoryRetriever::new(store, embedding, cache))
+                            }
+                            Err(e) => {
+                                warn!("Embedding service failed: {}. Running without memory retrieval.", e);
+                                None
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!("Database not available: {}. Running without persistence.", e);
@@ -145,26 +142,26 @@ impl TuiState {
             current_model,
             verbose: args.verbose,
             tools_enabled: !args.no_tools,
-            memory_store,
+            memory_retriever,
             user_id,
         })
     }
 
-    /// Save a message to memory
+    /// Save a message to memory (with embedding)
     async fn save_to_memory(&self, content: &str, role: &str) {
-        if let Some(ref store) = self.memory_store {
+        if let Some(ref retriever) = self.memory_retriever {
             let memory = Memory::new(&self.user_id, content)
                 .with_tags(vec![role.to_string(), "tui".to_string()]);
-            if let Err(e) = store.save(&memory, None).await {
+            if let Err(e) = retriever.save_memory(&memory).await {
                 warn!("Failed to save memory: {}", e);
             }
         }
     }
 
-    /// Search memories
+    /// Search memories (full-text via retriever's underlying store)
     async fn search_memories(&self, query: &str, limit: usize) -> Vec<Memory> {
-        if let Some(ref store) = self.memory_store {
-            match store.search_fulltext(&self.user_id, query, limit).await {
+        if let Some(ref retriever) = self.memory_retriever {
+            match retriever.store().search_fulltext(&self.user_id, query, limit).await {
                 Ok(memories) => memories,
                 Err(e) => {
                     warn!("Failed to search memories: {}", e);
@@ -311,8 +308,23 @@ fn format_tool_result(result: &str, max_len: usize) -> String {
 async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
     // Add user message to conversation
     state.conversation.add_user_message(user_input);
-    
+
     let mut messages = state.conversation.get_api_messages();
+
+    // Inject relevant memories into system prompt
+    if let Some(ref retriever) = state.memory_retriever {
+        match retriever.retrieve(&state.user_id, user_input, 5).await {
+            Ok(memory_context) if !memory_context.is_empty() => {
+                if let Some(sys) = messages.iter_mut().find(|m| m.role == Role::System) {
+                    sys.content.push_str(&memory_context);
+                    info!("Injected memory context ({} chars)", memory_context.len());
+                }
+            }
+            Err(e) => warn!("Memory retrieval failed: {}", e),
+            _ => {}
+        }
+    }
+
     let tool_definitions = if state.tools_enabled {
         state.tools.definitions()
     } else {
@@ -388,7 +400,7 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
                     messages.push(choice.message.clone());
                     
                     // Execute each tool call
-                    for tool_call in tool_calls.iter().take(2) {
+                    for tool_call in tool_calls.iter() {
                         tool_calls_made += 1;
                         
                         let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
@@ -454,7 +466,7 @@ async fn run_repl(mut state: TuiState) -> Result<()> {
         style(state.config.sandbox.allowed_dir.display()).dim());
     
     // Show memory status
-    let has_memory = state.memory_store.is_some();
+    let has_memory = state.memory_retriever.is_some();
     if has_memory {
         println!("   {} Memory: {}", style("✓").green(), style("PostgreSQL (persistent)").cyan());
     } else {

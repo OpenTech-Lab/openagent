@@ -1,7 +1,6 @@
 //! Memory storage and retrieval
 
-use crate::database::{OpenSearchClient, PostgresPool};
-use crate::database::opensearch::SearchDocument;
+use crate::database::PostgresPool;
 use crate::error::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -78,29 +77,20 @@ impl Memory {
     }
 }
 
-/// Memory store combining PostgreSQL and OpenSearch
+/// Memory store backed by PostgreSQL + pgvector
+#[derive(Clone)]
 pub struct MemoryStore {
     pg_pool: PostgresPool,
-    opensearch: Option<OpenSearchClient>,
 }
 
 impl MemoryStore {
     /// Create a new memory store
-    pub fn new(pg_pool: PostgresPool, opensearch: Option<OpenSearchClient>) -> Self {
-        MemoryStore { pg_pool, opensearch }
-    }
-
-    /// Create a memory store without OpenSearch (PostgreSQL only)
-    pub fn postgres_only(pg_pool: PostgresPool) -> Self {
-        MemoryStore {
-            pg_pool,
-            opensearch: None,
-        }
+    pub fn new(pg_pool: PostgresPool) -> Self {
+        MemoryStore { pg_pool }
     }
 
     /// Save a memory
     pub async fn save(&self, memory: &Memory, embedding: Option<Vec<f32>>) -> Result<()> {
-        // Save to PostgreSQL
         let embedding_vec = embedding.map(Vector::from);
 
         sqlx::query(r#"
@@ -127,21 +117,6 @@ impl MemoryStore {
         .bind(memory.access_count)
         .execute(&self.pg_pool)
         .await?;
-
-        // Index in OpenSearch for full-text search
-        if let Some(ref os) = self.opensearch {
-            let doc = SearchDocument {
-                id: memory.id.to_string(),
-                user_id: memory.user_id.clone(),
-                conversation_id: None,
-                content: memory.content.clone(),
-                doc_type: "memories".to_string(),
-                role: None,
-                timestamp: memory.created_at.to_rfc3339(),
-                tags: memory.tags.clone(),
-            };
-            os.index_document(&doc).await?;
-        }
 
         Ok(())
     }
@@ -176,11 +151,6 @@ impl MemoryStore {
             .bind(id)
             .execute(&self.pg_pool)
             .await?;
-
-        // Delete from OpenSearch
-        if let Some(ref os) = self.opensearch {
-            os.delete_document("memories", &id.to_string()).await?;
-        }
 
         Ok(())
     }
@@ -250,49 +220,42 @@ impl MemoryStore {
             .collect())
     }
 
-    /// Search memories by full-text using OpenSearch
+    /// Search memories by full-text using PostgreSQL tsvector
     pub async fn search_fulltext(
         &self,
         user_id: &str,
         query: &str,
         limit: usize,
     ) -> Result<Vec<Memory>> {
-        if let Some(ref os) = self.opensearch {
-            let results = os.search_memories(user_id, query, limit).await?;
+        // Build tsquery from space-separated words (joined with &)
+        let tsquery_str: String = query
+            .split_whitespace()
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" & ");
 
-            // Fetch full memory details from PostgreSQL
-            let mut memories = Vec::new();
-            for result in results {
-                if let Ok(id) = Uuid::parse_str(&result.document.id) {
-                    if let Some(memory) = self.get(id).await? {
-                        memories.push(memory);
-                    }
-                }
-            }
-
-            Ok(memories)
-        } else {
-            // Fallback to PostgreSQL text search
-            let memories: Vec<Memory> = sqlx::query_as(r#"
-                SELECT id, user_id, content, summary, importance, tags,
-                       created_at, updated_at, accessed_at, access_count
-                FROM memories
-                WHERE user_id = $1 AND (
-                    content ILIKE '%' || $2 || '%' OR
-                    summary ILIKE '%' || $2 || '%' OR
-                    $2 = ANY(tags)
-                )
-                ORDER BY importance DESC, accessed_at DESC
-                LIMIT $3
-            "#)
-            .bind(user_id)
-            .bind(query)
-            .bind(limit as i32)
-            .fetch_all(&self.pg_pool)
-            .await?;
-
-            Ok(memories)
+        if tsquery_str.is_empty() {
+            return Ok(vec![]);
         }
+
+        // Use tsvector search with ts_rank for relevance ordering
+        let memories: Vec<Memory> = sqlx::query_as(r#"
+            SELECT id, user_id, content, summary, importance, tags,
+                   created_at, updated_at, accessed_at, access_count
+            FROM memories
+            WHERE user_id = $1
+              AND search_vector @@ to_tsquery('simple', $2)
+            ORDER BY ts_rank(search_vector, to_tsquery('simple', $2)) DESC,
+                     importance DESC, accessed_at DESC
+            LIMIT $3
+        "#)
+        .bind(user_id)
+        .bind(&tsquery_str)
+        .bind(limit as i32)
+        .fetch_all(&self.pg_pool)
+        .await?;
+
+        Ok(memories)
     }
 
     /// Get all memories for a user

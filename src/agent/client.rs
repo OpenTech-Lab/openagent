@@ -275,6 +275,8 @@ mod tests {
             site_url: None,
             site_name: None,
             base_url: "https://openrouter.ai/api/v1".to_string(),
+            timeout_secs: 30,
+            max_retries: 3,
         }
     }
 

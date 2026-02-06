@@ -126,19 +126,6 @@ pub fn load_config_from_env() -> Result<Config> {
         config.storage.backend = super::types::storage::StorageBackendType::Postgres;
     }
 
-    // Load OpenSearch config
-    if let Ok(opensearch_url) = std::env::var("OPENSEARCH_URL") {
-        config.storage.opensearch = Some(super::types::storage::OpenSearchConfig {
-            url: opensearch_url,
-            username: std::env::var("OPENSEARCH_USERNAME").ok(),
-            password: std::env::var("OPENSEARCH_PASSWORD").ok().map(SecretString::from),
-            index_prefix: std::env::var("OPENSEARCH_INDEX_PREFIX")
-                .unwrap_or_else(|_| "openagent".to_string()),
-            shards: 1,
-            replicas: 0,
-        });
-    }
-
     // Load sandbox config
     if let Ok(env_str) = std::env::var("EXECUTION_ENV") {
         if let Ok(exec_env) = env_str.parse() {

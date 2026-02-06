@@ -109,7 +109,7 @@ pub mod migrations {
                 content TEXT NOT NULL,
                 tool_call_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                embedding vector(1536)
+                embedding vector(384)
             )
         "#)
         .execute(pool)
@@ -122,7 +122,7 @@ pub mod migrations {
                 user_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 summary TEXT,
-                embedding vector(1536),
+                embedding vector(384),
                 importance REAL NOT NULL DEFAULT 0.5,
                 tags TEXT[] NOT NULL DEFAULT '{}',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -167,6 +167,61 @@ pub mod migrations {
         .execute(pool)
         .await
         .ok(); // Ignore if already exists or not enough data
+
+        // --- tsvector full-text search for memories ---
+
+        // Add tsvector column
+        sqlx::query(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_vector TSVECTOR"
+        )
+        .execute(pool)
+        .await?;
+
+        // GIN index for fast full-text search
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_memories_search_vector ON memories USING GIN(search_vector)"
+        )
+        .execute(pool)
+        .await?;
+
+        // Auto-update trigger: uses 'simple' config for CJK/Japanese support
+        sqlx::query(r#"
+            CREATE OR REPLACE FUNCTION memories_search_vector_update() RETURNS trigger AS $$
+            BEGIN
+              NEW.search_vector :=
+                setweight(to_tsvector('simple', COALESCE(NEW.content, '')), 'A') ||
+                setweight(to_tsvector('simple', COALESCE(NEW.summary, '')), 'B') ||
+                setweight(to_tsvector('simple', COALESCE(array_to_string(NEW.tags, ' '), '')), 'C');
+              RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        "#)
+        .execute(pool)
+        .await?;
+
+        sqlx::query("DROP TRIGGER IF EXISTS memories_search_vector_trigger ON memories")
+            .execute(pool)
+            .await?;
+
+        sqlx::query(r#"
+            CREATE TRIGGER memories_search_vector_trigger
+              BEFORE INSERT OR UPDATE ON memories
+              FOR EACH ROW EXECUTE FUNCTION memories_search_vector_update()
+        "#)
+        .execute(pool)
+        .await?;
+
+        // Backfill existing rows that lack a search_vector
+        sqlx::query(r#"
+            UPDATE memories SET search_vector =
+              setweight(to_tsvector('simple', COALESCE(content, '')), 'A') ||
+              setweight(to_tsvector('simple', COALESCE(summary, '')), 'B') ||
+              setweight(to_tsvector('simple', COALESCE(array_to_string(tags, ' '), '')), 'C')
+            WHERE search_vector IS NULL
+        "#)
+        .execute(pool)
+        .await
+        .ok(); // Ignore if no rows
 
         info!("Database migrations completed");
         Ok(())

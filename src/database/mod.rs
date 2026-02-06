@@ -1,13 +1,11 @@
-//! Database module - PostgreSQL + pgvector and OpenSearch integration
+//! Database module - PostgreSQL + pgvector
 //!
-//! Provides hybrid storage for:
+//! Provides storage for:
 //! - PostgreSQL with pgvector: Long-term semantic memory and structured data
-//! - OpenSearch: Full-text search across conversation histories
+//! - PostgreSQL tsvector: Full-text search across memories
 
-mod opensearch;
 mod postgres;
 mod memory;
 
-pub use opensearch::OpenSearchClient;
 pub use postgres::{PostgresPool, init_pool, init_pool_for_migrations, migrations};
 pub use memory::{Memory, MemoryStore};

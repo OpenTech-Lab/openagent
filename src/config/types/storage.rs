@@ -1,6 +1,6 @@
 //! Storage configuration types
 //!
-//! Configuration for storage backends (PostgreSQL, OpenSearch, SQLite, etc.)
+//! Configuration for storage backends (PostgreSQL, SQLite, etc.)
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,6 @@ pub struct StorageConfig {
     pub backend: StorageBackendType,
     /// PostgreSQL configuration
     pub postgres: Option<PostgresConfig>,
-    /// OpenSearch configuration
-    pub opensearch: Option<OpenSearchConfig>,
     /// SQLite configuration
     #[serde(default)]
     pub sqlite: SqliteConfig,
@@ -28,7 +26,6 @@ impl Default for StorageConfig {
         StorageConfig {
             backend: StorageBackendType::Sqlite,
             postgres: None,
-            opensearch: None,
             sqlite: SqliteConfig::default(),
             memory: MemoryStorageConfig::default(),
         }
@@ -75,35 +72,6 @@ fn default_connect_timeout() -> u64 {
 
 fn default_true() -> bool {
     true
-}
-
-/// OpenSearch configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenSearchConfig {
-    /// OpenSearch URL
-    pub url: String,
-    /// Username
-    pub username: Option<String>,
-    /// Password
-    #[serde(skip_serializing)]
-    pub password: Option<SecretString>,
-    /// Index prefix
-    #[serde(default = "default_index_prefix")]
-    pub index_prefix: String,
-    /// Number of shards
-    #[serde(default = "default_shards")]
-    pub shards: u32,
-    /// Number of replicas
-    #[serde(default)]
-    pub replicas: u32,
-}
-
-fn default_index_prefix() -> String {
-    "openagent".to_string()
-}
-
-fn default_shards() -> u32 {
-    1
 }
 
 /// SQLite configuration
@@ -205,15 +173,15 @@ impl Default for EmbeddingConfig {
 }
 
 fn default_embedding_provider() -> String {
-    "openai".to_string()
+    "local".to_string()
 }
 
 fn default_embedding_model() -> String {
-    "text-embedding-3-small".to_string()
+    "multilingual-e5-small".to_string()
 }
 
 fn default_embedding_dims() -> u32 {
-    1536
+    384
 }
 
 #[cfg(test)]

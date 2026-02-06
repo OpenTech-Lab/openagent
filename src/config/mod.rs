@@ -30,7 +30,7 @@ pub use types::provider::{
 
 // Re-export storage types
 pub use types::storage::{
-    StorageConfig, PostgresConfig, OpenSearchConfig, SqliteConfig, EmbeddingConfig,
+    StorageConfig, PostgresConfig, SqliteConfig, EmbeddingConfig,
 };
 
 // Backward compatibility aliases

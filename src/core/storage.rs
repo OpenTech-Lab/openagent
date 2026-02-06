@@ -8,7 +8,7 @@
 //!
 //! This follows openclaw's pattern of abstracting storage to enable:
 //! - PostgreSQL + pgvector for embeddings
-//! - OpenSearch/Elasticsearch for full-text search
+//! - PostgreSQL tsvector for full-text search
 //! - SQLite for lightweight deployments
 //! - Custom backends for specialized use cases
 
@@ -156,7 +156,7 @@ pub trait MemoryBackend: Send + Sync {
 
 /// Abstract interface for full-text search
 ///
-/// Implement this trait for search backends like OpenSearch or Elasticsearch.
+/// Implement this trait for search backends like PostgreSQL tsvector.
 #[async_trait]
 pub trait SearchBackend: Send + Sync {
     /// Get the backend ID

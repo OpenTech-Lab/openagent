@@ -2,6 +2,7 @@
 /target/
 debug/
 release/
+.fastembed_cache
 
 # Cargo lock file (include for binaries, exclude for libraries)
 # Cargo.lock

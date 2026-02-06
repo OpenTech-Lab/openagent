@@ -11,7 +11,7 @@
 //! - **Agent** (`agent`): LLM interaction, conversation management, and tool calling
 //! - **Channels** (`channels`): Messaging platform integrations (Telegram, Discord, etc.)
 //! - **Providers** (`providers`): LLM backend implementations (OpenRouter, Anthropic, etc.)
-//! - **Storage** (`database`): Persistence backends (PostgreSQL, SQLite, OpenSearch)
+//! - **Storage** (`database`): Persistence backends (PostgreSQL, SQLite)
 //! - **Sandbox** (`sandbox`): Secure code execution environments (OS, Wasm, Container)
 //! - **Gateway** (`gateway`): WebSocket-based control plane
 //!
@@ -50,6 +50,9 @@ pub mod config;
 
 // Database and storage backends
 pub mod database;
+
+// Memory: embedding generation, caching, and retrieval
+pub mod memory;
 
 // Error types
 pub mod error;

@@ -46,11 +46,8 @@ services:
     environment:
       - RUST_LOG=${RUST_LOG:-info,openagent=debug}
       - DATABASE_URL=postgres://openagent:openagent@openagent-postgres:5432/openagent
-      - OPENSEARCH_URL=http://openagent-opensearch:9200
     depends_on:
       openagent-postgres:
-        condition: service_healthy
-      openagent-opensearch:
         condition: service_healthy
     networks:
       - openagent-network
@@ -74,11 +71,8 @@ services:
     environment:
       - RUST_LOG=${RUST_LOG:-info,openagent=debug}
       - DATABASE_URL=postgres://openagent:openagent@openagent-postgres:5432/openagent
-      - OPENSEARCH_URL=http://openagent-opensearch:9200
     depends_on:
       openagent-postgres:
-        condition: service_healthy
-      openagent-opensearch:
         condition: service_healthy
     networks:
       - openagent-network
@@ -107,31 +101,6 @@ services:
       - openagent-network
     restart: unless-stopped
 
-  # ============================================================================
-  # OpenSearch for full-text search
-  # ============================================================================
-  openagent-opensearch:
-    image: opensearchproject/opensearch:2.11.0
-    container_name: openagent-opensearch
-    environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=OpenAgent123!
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    volumes:
-      - openagent-opensearch-data:/usr/share/opensearch/data
-    ports:
-      - "${OPENSEARCH_PORT:-9200}:9200"
-      - "${OPENSEARCH_PERF_PORT:-9600}:9600"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-    networks:
-      - openagent-network
-    restart: unless-stopped
-
 # ==============================================================================
 # Networks
 # ==============================================================================
@@ -144,4 +113,3 @@ networks:
 # ==============================================================================
 volumes:
   openagent-postgres-data:
-  openagent-opensearch-data:

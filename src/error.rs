@@ -76,10 +76,6 @@ pub enum Error {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
-    /// OpenSearch error
-    #[error("OpenSearch error: {0}")]
-    OpenSearch(String),
-
     /// Storage error
     #[error("Storage error: {0}")]
     Storage(String),
@@ -187,7 +183,6 @@ impl Error {
         matches!(
             self,
             Error::Http(_)
-                | Error::OpenSearch(_)
                 | Error::RateLimit(_)
                 | Error::Timeout(_)
                 | Error::Database(_)
@@ -221,7 +216,7 @@ impl Error {
             Error::RateLimit(_) => 4029,
             Error::Auth(_) | Error::Unauthorized(_) => 4010,
             Error::Channel(_) | Error::Telegram(_) | Error::Discord(_) | Error::Slack(_) => 5002,
-            Error::Database(_) | Error::OpenSearch(_) | Error::Storage(_) => 5003,
+            Error::Database(_) | Error::Storage(_) => 5003,
             Error::Sandbox(_) | Error::Wasm(_) | Error::Container(_) | Error::ExecutionTimeout(_) => 5004,
             Error::Http(_) | Error::WebSocket(_) | Error::Connection(_) | Error::Timeout(_) => 5005,
             Error::Json(_) | Error::Toml(_) => 4002,
@@ -242,7 +237,7 @@ impl Error {
             Error::Provider(_) | Error::OpenRouter(_) | Error::Anthropic(_) | Error::RateLimit(_) => "provider",
             Error::Auth(_) | Error::Unauthorized(_) => "auth",
             Error::Channel(_) | Error::Telegram(_) | Error::Discord(_) | Error::Slack(_) => "channel",
-            Error::Database(_) | Error::OpenSearch(_) | Error::Storage(_) => "storage",
+            Error::Database(_) | Error::Storage(_) => "storage",
             Error::Sandbox(_) | Error::Wasm(_) | Error::Container(_) | Error::ExecutionTimeout(_) => "sandbox",
             Error::Http(_) | Error::WebSocket(_) | Error::Connection(_) | Error::Timeout(_) => "network",
             Error::Json(_) | Error::Toml(_) => "serialization",

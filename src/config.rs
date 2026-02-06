@@ -85,19 +85,6 @@ pub struct DatabaseConfig {
     pub connect_timeout_secs: u64,
 }
 
-/// OpenSearch configuration
-#[derive(Debug, Clone)]
-pub struct OpenSearchConfig {
-    /// OpenSearch URL
-    pub url: String,
-    /// Username for authentication
-    pub username: Option<String>,
-    /// Password for authentication
-    pub password: Option<SecretString>,
-    /// Index prefix
-    pub index_prefix: String,
-}
-
 /// Docker/container configuration
 #[derive(Debug, Clone)]
 pub struct ContainerConfig {
@@ -140,8 +127,6 @@ pub struct Config {
     pub telegram: TelegramConfig,
     /// PostgreSQL database settings
     pub database: DatabaseConfig,
-    /// OpenSearch settings
-    pub opensearch: OpenSearchConfig,
     /// Sandbox/execution settings
     pub sandbox: SandboxConfig,
     /// Logging settings
@@ -186,14 +171,6 @@ impl Config {
                     .unwrap_or_else(|_| "30".to_string())
                     .parse()
                     .unwrap_or(30),
-            },
-            opensearch: OpenSearchConfig {
-                url: std::env::var("OPENSEARCH_URL")
-                    .unwrap_or_else(|_| "https://localhost:9200".to_string()),
-                username: std::env::var("OPENSEARCH_USERNAME").ok(),
-                password: std::env::var("OPENSEARCH_PASSWORD").ok().map(SecretString::from),
-                index_prefix: std::env::var("OPENSEARCH_INDEX_PREFIX")
-                    .unwrap_or_else(|_| "openagent".to_string()),
             },
             sandbox: SandboxConfig {
                 execution_env: std::env::var("EXECUTION_ENV")
@@ -243,12 +220,6 @@ impl Config {
                 url: SecretString::from(""),
                 max_connections: 5,
                 connect_timeout_secs: 30,
-            },
-            opensearch: OpenSearchConfig {
-                url: "https://localhost:9200".to_string(),
-                username: None,
-                password: None,
-                index_prefix: "openagent".to_string(),
             },
             sandbox: SandboxConfig {
                 execution_env: ExecutionEnv::Sandbox,

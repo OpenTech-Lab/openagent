@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use console::{style, Term};
 use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input, MultiSelect, Password, Select};
 use openagent::config::{Config, ExecutionEnv};
-use openagent::database::{init_pool, init_pool_for_migrations, migrations, OpenSearchClient};
+use openagent::database::{init_pool, init_pool_for_migrations, migrations};
 use openagent::{Error, Result, VERSION};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
@@ -565,14 +565,6 @@ async fn check_status_interactive() -> Result<()> {
             Err(e) => println!("{} {}", style("✗").red(), e),
         }
 
-        // Check OpenSearch
-        print!("   {} OpenSearch... ", style("○").dim());
-        io::stdout().flush()?;
-        match test_opensearch(&config).await {
-            Ok(_) => println!("{}", style("✓ Connected").green()),
-            Err(e) => println!("{} {}", style("✗").red(), e),
-        }
-
         // Check Sandbox
         print!("   {} Sandbox ({})... ", style("○").dim(), config.sandbox.execution_env);
         io::stdout().flush()?;
@@ -958,29 +950,23 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     print_step(4, total_steps, "Database Configuration (Optional)");
 
     println!();
-    println!("   PostgreSQL enables long-term memory and conversation history.");
-    println!("   OpenSearch enables full-text search across conversations.");
+    println!("   PostgreSQL enables long-term memory, conversation history,");
+    println!("   and full-text search (via tsvector).");
     println!();
 
     // Check if databases are already configured via environment (e.g., running in Docker)
     let env_database_url = std::env::var("DATABASE_URL").ok();
-    let env_opensearch_url = std::env::var("OPENSEARCH_URL").ok();
-
-    let postgres_started = if env_database_url.is_some() && env_opensearch_url.is_some() {
-        println!("   {} Databases pre-configured via environment variables", style("✅").green());
+    let postgres_started = if env_database_url.is_some() {
+        println!("   {} Database pre-configured via environment variables", style("✅").green());
         if let Some(ref db_url) = env_database_url {
             // Mask the password in the URL for display
             let masked = db_url.split('@').last().unwrap_or(db_url);
             println!("   PostgreSQL: ...@{}", masked);
             env_vars.insert("DATABASE_URL".to_string(), db_url.clone());
         }
-        if let Some(ref os_url) = env_opensearch_url {
-            println!("   OpenSearch: {}", os_url);
-            env_vars.insert("OPENSEARCH_URL".to_string(), os_url.clone());
-        }
         println!();
         println!("   Skipping database configuration (already set).");
-        true // Databases are configured
+        true // Database is configured
     } else {
     // Check if Docker is available
     let docker_available = is_docker_available();
@@ -1042,61 +1028,6 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         }
     };
 
-    // OpenSearch configuration
-    println!();
-    
-    let os_options = if docker_available {
-        vec![
-            "🐳 Auto-start OpenSearch with Docker (recommended)",
-            "⚙️  Configure existing OpenSearch manually",
-            "⏭️  Skip OpenSearch for now",
-        ]
-    } else {
-        vec![
-            "⚙️  Configure existing OpenSearch manually",
-            "⏭️  Skip OpenSearch for now",
-        ]
-    };
-
-    let os_choice = prompt_menu("OpenSearch setup:", &os_options.iter().map(|s| *s).collect::<Vec<_>>(), 0)?;
-
-    let _opensearch_started = if docker_available {
-        match os_choice {
-            0 => {
-                // Auto-start with Docker
-                println!();
-                match start_opensearch_docker() {
-                    Ok(_) => {
-                        env_vars.insert("OPENSEARCH_URL".to_string(), 
-                            "http://localhost:9200".to_string());
-                        println!("   ✅ OpenSearch started and configured");
-                        true
-                    }
-                    Err(e) => {
-                        println!("   ❌ Failed to start OpenSearch: {}", e);
-                        println!("   You can configure it manually later.");
-                        false
-                    }
-                }
-            }
-            1 => {
-                // Manual configuration
-                configure_opensearch_manually(&mut env_vars)?
-            }
-            _ => {
-                println!("   ⏭️  Skipping OpenSearch (can be configured later)");
-                false
-            }
-        }
-    } else {
-        match os_choice {
-            0 => configure_opensearch_manually(&mut env_vars)?,
-            _ => {
-                println!("   ⏭️  Skipping OpenSearch (can be configured later)");
-                false
-            }
-        }
-    };
     pg_started // return postgres status from else block
     }; // end of else block for pre-configured databases
 
@@ -1106,8 +1037,8 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         if prompt_yes_no("   Run database migrations now?", true)? {
             print!("   Running migrations... ");
             io::stdout().flush()?;
-            // Save config first so migrations can read it (skip if running in Docker with pre-configured DBs)
-            let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
+            // Save config first so migrations can read it (skip if running in Docker with pre-configured DB)
+            let databases_preconfigured = env_database_url.is_some();
             if !databases_preconfigured {
                 write_env_file(env_path, &env_vars)?;
                 dotenvy::from_path(env_path).ok();
@@ -1168,7 +1099,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     print_section("Saving Configuration");
 
     // Always try to save the .env file (needed for Telegram token, etc.)
-    let databases_preconfigured = env_database_url.is_some() && env_opensearch_url.is_some();
+    let databases_preconfigured = env_database_url.is_some();
     let mut save_succeeded = false;
     match write_env_file(env_path, &env_vars) {
         Ok(_) => {
@@ -1349,14 +1280,6 @@ async fn test_database(config: &Config) -> Result<()> {
     Ok(())
 }
 
-async fn test_opensearch(config: &Config) -> Result<()> {
-    let os_config = config.storage.opensearch.as_ref()
-        .ok_or_else(|| Error::Config("OpenSearch not configured".into()))?;
-    let client = OpenSearchClient::new(os_config).await?;
-    client.health_check().await?;
-    Ok(())
-}
-
 async fn test_sandbox(config: &Config) -> Result<()> {
     use openagent::sandbox::{create_executor, ExecutionRequest, Language};
 
@@ -1505,92 +1428,6 @@ fn wait_for_postgres() -> Result<()> {
     Ok(()) // Continue anyway, might work
 }
 
-/// Start OpenSearch using Docker
-fn start_opensearch_docker() -> Result<()> {
-    const CONTAINER_NAME: &str = "openagent-opensearch";
-
-    if is_container_running(CONTAINER_NAME) {
-        println!("   {} OpenSearch container already running", style("ℹ").blue());
-        return Ok(());
-    }
-
-    if container_exists(CONTAINER_NAME) {
-        // Container exists but stopped, start it
-        print!("   Starting existing OpenSearch container... ");
-        io::stdout().flush()?;
-        
-        let status = std::process::Command::new("docker")
-            .args(["start", CONTAINER_NAME])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| Error::Config(format!("Failed to start container: {}", e)))?;
-
-        if status.success() {
-            println!("✅");
-            wait_for_opensearch()?;
-            return Ok(());
-        } else {
-            println!("❌");
-            return Err(Error::Config("Failed to start existing container".to_string()));
-        }
-    }
-
-    // Create new container
-    print!("   Creating OpenSearch container... ");
-    io::stdout().flush()?;
-
-    let status = std::process::Command::new("docker")
-        .args([
-            "run", "-d",
-            "--name", CONTAINER_NAME,
-            "-e", "discovery.type=single-node",
-            "-e", "DISABLE_SECURITY_PLUGIN=true",
-            "-e", "OPENSEARCH_INITIAL_ADMIN_PASSWORD=OpenAgent123!",
-            "-p", "9200:9200",
-            "--restart", "unless-stopped",
-            "opensearchproject/opensearch:2"
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .status()
-        .map_err(|e| Error::Config(format!("Failed to run docker: {}", e)))?;
-
-    if status.success() {
-        println!("✅");
-        wait_for_opensearch()?;
-        Ok(())
-    } else {
-        println!("❌");
-        Err(Error::Config("Failed to create OpenSearch container".to_string()))
-    }
-}
-
-/// Wait for OpenSearch to be ready
-fn wait_for_opensearch() -> Result<()> {
-    print!("   Waiting for OpenSearch to be ready... ");
-    io::stdout().flush()?;
-
-    for i in 0..60 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        
-        // Try to connect to OpenSearch
-        let status = std::process::Command::new("curl")
-            .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:9200"])
-            .output();
-
-        if let Ok(output) = status {
-            if output.stdout == b"200" {
-                println!("✅ ({}s)", i + 1);
-                return Ok(());
-            }
-        }
-    }
-
-    println!("⚠️  Timeout (may still be starting)");
-    Ok(()) // Continue anyway
-}
-
 /// Manual PostgreSQL configuration
 fn configure_postgres_manually(env_vars: &mut HashMap<String, String>) -> Result<bool> {
     let db_host = prompt_with_default("   Database host", "localhost")?;
@@ -1605,21 +1442,6 @@ fn configure_postgres_manually(env_vars: &mut HashMap<String, String>) -> Result
     );
     env_vars.insert("DATABASE_URL".to_string(), db_url);
     println!("   ✅ PostgreSQL configured");
-    Ok(true)
-}
-
-/// Manual OpenSearch configuration
-fn configure_opensearch_manually(env_vars: &mut HashMap<String, String>) -> Result<bool> {
-    let os_url = prompt_with_default("   OpenSearch URL", "http://localhost:9200")?;
-    env_vars.insert("OPENSEARCH_URL".to_string(), os_url);
-
-    if prompt_yes_no("   Does OpenSearch require authentication?", false)? {
-        let os_user = prompt("   OpenSearch username: ")?;
-        let os_pass = prompt("   OpenSearch password: ")?;
-        env_vars.insert("OPENSEARCH_USERNAME".to_string(), os_user);
-        env_vars.insert("OPENSEARCH_PASSWORD".to_string(), os_pass);
-    }
-    println!("   ✅ OpenSearch configured");
     Ok(true)
 }
 
@@ -1693,12 +1515,6 @@ async fn check_status() -> Result<()> {
         Err(e) => println!("PostgreSQL: ❌ {}", e),
     }
 
-    // Check OpenSearch
-    match test_opensearch(&config).await {
-        Ok(_) => println!("OpenSearch: ✅ Connected"),
-        Err(e) => println!("OpenSearch: ❌ {}", e),
-    }
-
     Ok(())
 }
 
@@ -1713,19 +1529,6 @@ async fn run_migrations() -> Result<()> {
     let pool = init_pool_for_migrations(postgres).await?;
 
     migrations::run(&pool).await?;
-
-    // Initialize OpenSearch indexes if available
-    if let Some(os_config) = &config.storage.opensearch {
-        match OpenSearchClient::new(os_config).await {
-            Ok(client) => {
-                client.init_indexes().await?;
-                println!("OpenSearch indexes initialized");
-            }
-            Err(e) => {
-                println!("OpenSearch not available: {}", e);
-            }
-        }
-    }
 
     println!("\n✅ Migrations complete!");
     Ok(())

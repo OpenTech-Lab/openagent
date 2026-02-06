@@ -117,13 +117,10 @@ generate_ports() {
     local offset=$((16#$hash % 1000))
     
     POSTGRES_PORT=$((5432 + offset))
-    OPENSEARCH_PORT=$((9200 + offset))
-    OPENSEARCH_PERF_PORT=$((9600 + offset))
     GATEWAY_PORT=$((8080 + offset))
-    
+
     # Check if ports are in valid range and adjust if needed
     if [ $POSTGRES_PORT -gt 65000 ]; then POSTGRES_PORT=$((5432 + (offset % 100))); fi
-    if [ $OPENSEARCH_PORT -gt 65000 ]; then OPENSEARCH_PORT=$((9200 + (offset % 100))); fi
     if [ $GATEWAY_PORT -gt 65000 ]; then GATEWAY_PORT=$((8080 + (offset % 100))); fi
 }
 
@@ -172,7 +169,7 @@ init_agent() {
     generate_compose_file
     
     success "Agent '${AGENT_NAME}' initialized at ${agent_dir}"
-    info "Ports: PostgreSQL=${POSTGRES_PORT}, OpenSearch=${OPENSEARCH_PORT}, Gateway=${GATEWAY_PORT}"
+    info "Ports: PostgreSQL=${POSTGRES_PORT}, Gateway=${GATEWAY_PORT}"
 }
 
 # Generate docker-compose.yml for the agent
@@ -231,11 +228,8 @@ services:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
       - AGENT_NAME=${AGENT_NAME}
       - DATABASE_URL=postgres://openagent:openagent@openagent-${AGENT_NAME}-postgres:5432/openagent
-      - OPENSEARCH_URL=http://openagent-${AGENT_NAME}-opensearch:9200
     depends_on:
       ${AGENT_NAME}-postgres:
-        condition: service_healthy
-      ${AGENT_NAME}-opensearch:
         condition: service_healthy
     networks:
       - openagent-${AGENT_NAME}-network
@@ -260,11 +254,8 @@ services:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
       - AGENT_NAME=${AGENT_NAME}
       - DATABASE_URL=postgres://openagent:openagent@openagent-${AGENT_NAME}-postgres:5432/openagent
-      - OPENSEARCH_URL=http://openagent-${AGENT_NAME}-opensearch:9200
     depends_on:
       ${AGENT_NAME}-postgres:
-        condition: service_healthy
-      ${AGENT_NAME}-opensearch:
         condition: service_healthy
     networks:
       - openagent-${AGENT_NAME}-network
@@ -293,31 +284,6 @@ services:
       - openagent-${AGENT_NAME}-network
     restart: unless-stopped
 
-  # ============================================================================
-  # OpenSearch for full-text search
-  # ============================================================================
-  ${AGENT_NAME}-opensearch:
-    image: opensearchproject/opensearch:2.11.0
-    container_name: openagent-${AGENT_NAME}-opensearch
-    environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=OpenAgent123!
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    volumes:
-      - openagent-${AGENT_NAME}-opensearch-data:/usr/share/opensearch/data
-    ports:
-      - "${OPENSEARCH_PORT}:9200"
-      - "${OPENSEARCH_PERF_PORT}:9600"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\\\|\"status\":\"yellow\"'"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-    networks:
-      - openagent-${AGENT_NAME}-network
-    restart: unless-stopped
-
 # ==============================================================================
 # Networks
 # ==============================================================================
@@ -330,7 +296,6 @@ networks:
 # ==============================================================================
 volumes:
   openagent-${AGENT_NAME}-postgres-data:
-  openagent-${AGENT_NAME}-opensearch-data:
 EOF
 
     success "Generated docker-compose.yml for agent '${AGENT_NAME}'"
@@ -414,21 +379,18 @@ start_databases() {
     step "Starting database services..."
     
     if [ -n "$AGENT_NAME" ]; then
-        compose up -d ${AGENT_NAME}-postgres ${AGENT_NAME}-opensearch
+        compose up -d ${AGENT_NAME}-postgres
     else
-        $COMPOSE_CMD up -d openagent-postgres openagent-opensearch
+        $COMPOSE_CMD up -d openagent-postgres
     fi
     
     info "Waiting for databases to be healthy..."
     
     local pg_container="openagent-postgres"
-    local os_port="9200"
     if [ -n "$AGENT_NAME" ]; then
         pg_container="openagent-${AGENT_NAME}-postgres"
-        generate_ports "$AGENT_NAME"
-        os_port="$OPENSEARCH_PORT"
     fi
-    
+
     # Wait for PostgreSQL
     echo -n "   PostgreSQL: "
     for i in {1..30}; do
@@ -439,19 +401,8 @@ start_databases() {
         echo -n "."
         sleep 2
     done
-    
-    # Wait for OpenSearch
-    echo -n "   OpenSearch: "
-    for i in {1..30}; do
-        if curl -s http://localhost:${os_port}/_cluster/health 2>/dev/null | grep -q '"status"'; then
-            echo -e "${GREEN}ready${NC}"
-            break
-        fi
-        echo -n "."
-        sleep 2
-    done
-    
-    success "Databases are ready"
+
+    success "Database is ready"
 }
 
 # Run onboarding wizard
@@ -589,7 +540,6 @@ show_usage() {
     echo ""
     echo "Each agent has isolated:"
     echo "  • PostgreSQL database (separate memory/records)"
-    echo "  • OpenSearch index (separate search history)"
     echo "  • Workspace directory (.agents/<name>/workspace)"
     echo "  • SOUL.md personality file (.agents/<name>/SOUL.md)"
     echo "  • Environment config (.agents/<name>/.env)"
