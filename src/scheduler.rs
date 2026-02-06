@@ -5,7 +5,7 @@
 //! 2. Picks up and processes pending tasks if the agent is idle
 
 use crate::agent::{
-    ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
+    ConversationManager, GenerationOptions, LoopGuard, Message as AgentMessage, OpenRouterClient,
     ToolCall, ToolRegistry,
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
@@ -279,6 +279,7 @@ impl Scheduler {
 
         let tool_definitions = self.tools.definitions();
         let mut final_response = String::new();
+        let mut loop_guard = LoopGuard::default();
 
         const MAX_ITERATIONS: u32 = 20;
         for _iteration in 0..MAX_ITERATIONS {
@@ -337,6 +338,16 @@ impl Scheduler {
                             Err(e) => format!("Tool error: {}", e),
                         };
                         messages.push(AgentMessage::tool(&tc.id, &content));
+
+                        // Check for stuck loops
+                        if let Some(hint) = loop_guard.record(
+                            &tc.function.name,
+                            &tc.function.arguments,
+                            &content,
+                        ) {
+                            warn!("Loop guard triggered for tool '{}' during task processing", tc.function.name);
+                            messages.push(AgentMessage::user(&hint));
+                        }
                     }
                     continue;
                 }

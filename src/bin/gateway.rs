@@ -4,7 +4,7 @@
 //! Implements OpenClaw-style session sandboxing and DM pairing.
 
 use openagent::agent::{
-    ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
+    ConversationManager, GenerationOptions, LoopGuard, Message as AgentMessage, OpenRouterClient,
     ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
@@ -915,12 +915,12 @@ async fn handle_chat(
     debug!("User message: {:?}", text);
 
     // Maximum iterations to prevent infinite loops
-    // Increased to support multi-step tasks (e.g., apt update, apt install, service start)
-    const MAX_ITERATIONS: u32 = 999;
+    const MAX_ITERATIONS: u32 = 50;
     let mut iteration = 0;
     let mut final_response = String::new();
     let mut tool_calls_made = 0u32;
-    const MAX_TOOL_CALLS: u32 = 999;
+    const MAX_TOOL_CALLS: u32 = 30;
+    let mut loop_guard = LoopGuard::default();
 
     // Agentic loop: keep running until LLM stops calling tools
     loop {
@@ -1070,6 +1070,16 @@ async fn handle_chat(
 
                         // Add tool result to messages
                         messages.push(AgentMessage::tool(&tool_call.id, &result_content));
+
+                        // Check for stuck loops (same tool returning same result repeatedly)
+                        if let Some(hint) = loop_guard.record(
+                            tool_name,
+                            &tool_call.function.arguments,
+                            &result_content,
+                        ) {
+                            warn!("Loop guard triggered for tool '{}', injecting hint", tool_name);
+                            messages.push(AgentMessage::user(&hint));
+                        }
                     }
 
                     // Continue loop - LLM will process tool results
