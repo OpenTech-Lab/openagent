@@ -7,12 +7,13 @@ use openagent::agent::{
     ConversationManager, GenerationOptions, Message as AgentMessage, OpenRouterClient,
     ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
+    MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use openagent::config::Config;
 use openagent::config::DmPolicy;
-use openagent::database::init_pool;
-use openagent::memory::{EmbeddingService, MemoryCache, MemoryRetriever};
+use openagent::database::{init_pool, Memory, MemoryType};
+use openagent::memory::{ConversationSummarizer, EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::sandbox::{create_executor, CodeExecutor, ExecutionRequest, Language};
 use openagent::{Error, Result};
 
@@ -198,6 +199,15 @@ impl AppState {
             dm_tools.register(perplexity);
         }
 
+        // Register memory tools if memory retriever is available (DM)
+        if let Some(ref retriever) = memory_retriever {
+            dm_tools.register(MemorySaveTool::new(retriever.clone()));
+            dm_tools.register(MemorySearchTool::new(retriever.clone()));
+            dm_tools.register(MemoryListTool::new(retriever.clone()));
+            dm_tools.register(MemoryDeleteTool::new(retriever.clone()));
+            info!("Memory tools registered for DM sessions");
+        }
+
         // Initialize group tools (sandboxed - restricted commands)
         let mut group_tools = ToolRegistry::new();
         group_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
@@ -219,6 +229,13 @@ impl AppState {
             ]);
         group_tools.register(group_system_cmd);
         group_tools.register(DuckDuckGoSearchTool::new());
+
+        // Register read-only memory tools for group sessions
+        if let Some(ref retriever) = memory_retriever {
+            group_tools.register(MemorySearchTool::new(retriever.clone()));
+            group_tools.register(MemoryListTool::new(retriever.clone()));
+            info!("Memory tools (read-only) registered for group sessions");
+        }
 
         // Initialize pairing manager with admin users from config
         let admin_users = config.channels.telegram
@@ -492,8 +509,77 @@ async fn handle_command(
                 .await?;
         }
         "clear" => {
-            let mut conversations = state.conversations.write().await;
-            conversations.clear_conversation(&user_id.to_string());
+            // Grab messages before clearing for auto-summarization
+            let messages_for_summary = {
+                let conversations = state.conversations.read().await;
+                conversations
+                    .get(&user_id.to_string())
+                    .filter(|conv| conv.message_count() >= 4)
+                    .map(|conv| conv.messages.clone())
+            };
+
+            // Clear the conversation
+            {
+                let mut conversations = state.conversations.write().await;
+                conversations.clear_conversation(&user_id.to_string());
+            }
+
+            // Spawn background auto-episodic summary if there were enough messages
+            if let (Some(messages), Some(retriever)) =
+                (messages_for_summary, state.memory_retriever.as_ref())
+            {
+                let summarizer = ConversationSummarizer::new(state.llm_client.clone());
+                let retriever = retriever.clone();
+                let uid = user_id.to_string();
+                tokio::spawn(async move {
+                    match summarizer.summarize(&messages).await {
+                        Ok(episodic) => {
+                            if episodic.summary.is_empty() {
+                                return;
+                            }
+                            // Save episodic summary
+                            let memory = Memory::new(&uid, &episodic.summary)
+                                .with_importance(0.6)
+                                .with_memory_type(MemoryType::Episodic)
+                                .with_source("auto:episodic")
+                                .with_tags(episodic.topics.clone());
+                            if let Err(e) = retriever.save_memory(&memory).await {
+                                warn!("Failed to save episodic memory: {}", e);
+                            } else {
+                                info!("Auto-episodic memory saved for user={}", uid);
+                            }
+
+                            // Extract key facts as separate semantic memories
+                            for fact in &episodic.key_facts {
+                                let fact_memory = Memory::new(&uid, fact)
+                                    .with_importance(0.7)
+                                    .with_memory_type(MemoryType::Semantic)
+                                    .with_source("auto:extracted")
+                                    .with_tags(vec!["auto-extracted".into()]);
+                                if let Err(e) = retriever.save_memory(&fact_memory).await {
+                                    warn!("Failed to save extracted fact: {}", e);
+                                }
+                            }
+
+                            // Extract user preferences as semantic memories
+                            for pref in &episodic.user_preferences {
+                                let pref_memory = Memory::new(&uid, pref)
+                                    .with_importance(0.8)
+                                    .with_memory_type(MemoryType::Semantic)
+                                    .with_source("auto:extracted")
+                                    .with_tags(vec!["preference".into(), "auto-extracted".into()]);
+                                if let Err(e) = retriever.save_memory(&pref_memory).await {
+                                    warn!("Failed to save extracted preference: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Auto-summarization failed: {}", e);
+                        }
+                    }
+                });
+            }
+
             bot.send_message(chat_id, "✅ Conversation cleared.")
                 .await?;
         }
@@ -791,11 +877,19 @@ async fn handle_chat(
                         // Show typing while executing tool
                         let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
 
+                        // Inject _user_id for memory tools
+                        let mut call_args = args;
+                        if tool_name.starts_with("memory_") {
+                            if let Some(obj) = call_args.as_object_mut() {
+                                obj.insert("_user_id".to_string(), serde_json::json!(user_id));
+                            }
+                        }
+
                         // Execute the tool using session-appropriate registry
                         let call = ToolCall {
                             id: tool_call.id.clone(),
                             name: tool_name.clone(),
-                            arguments: args,
+                            arguments: call_args,
                         };
 
                         let result = tools.execute(&call).await;

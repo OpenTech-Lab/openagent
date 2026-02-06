@@ -6,7 +6,9 @@
 pub mod cache;
 pub mod embedding;
 pub mod retrieval;
+pub mod summarizer;
 
 pub use cache::MemoryCache;
 pub use embedding::EmbeddingService;
 pub use retrieval::MemoryRetriever;
+pub use summarizer::ConversationSummarizer;

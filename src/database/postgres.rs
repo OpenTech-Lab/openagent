@@ -168,6 +168,35 @@ pub mod migrations {
         .await
         .ok(); // Ignore if already exists or not enough data
 
+        // --- Memory type, metadata, and source columns ---
+
+        sqlx::query(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS memory_type TEXT NOT NULL DEFAULT 'semantic'"
+        )
+        .execute(pool)
+        .await
+        .ok(); // Ignore if column already exists
+
+        sqlx::query(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'"
+        )
+        .execute(pool)
+        .await
+        .ok();
+
+        sqlx::query(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'unknown'"
+        )
+        .execute(pool)
+        .await
+        .ok();
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_memories_memory_type ON memories(user_id, memory_type)"
+        )
+        .execute(pool)
+        .await?;
+
         // --- tsvector full-text search for memories ---
 
         // Add tsvector column
@@ -191,7 +220,8 @@ pub mod migrations {
               NEW.search_vector :=
                 setweight(to_tsvector('simple', COALESCE(NEW.content, '')), 'A') ||
                 setweight(to_tsvector('simple', COALESCE(NEW.summary, '')), 'B') ||
-                setweight(to_tsvector('simple', COALESCE(array_to_string(NEW.tags, ' '), '')), 'C');
+                setweight(to_tsvector('simple', COALESCE(array_to_string(NEW.tags, ' '), '')), 'C') ||
+                setweight(to_tsvector('simple', COALESCE(NEW.memory_type, '')), 'D');
               RETURN NEW;
             END;
             $$ LANGUAGE plpgsql
@@ -216,7 +246,8 @@ pub mod migrations {
             UPDATE memories SET search_vector =
               setweight(to_tsvector('simple', COALESCE(content, '')), 'A') ||
               setweight(to_tsvector('simple', COALESCE(summary, '')), 'B') ||
-              setweight(to_tsvector('simple', COALESCE(array_to_string(tags, ' '), '')), 'C')
+              setweight(to_tsvector('simple', COALESCE(array_to_string(tags, ' '), '')), 'C') ||
+              setweight(to_tsvector('simple', COALESCE(memory_type, '')), 'D')
             WHERE search_vector IS NULL
         "#)
         .execute(pool)

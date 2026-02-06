@@ -4,26 +4,27 @@
 //! - OpenRouter API client for multi-model LLM access
 //! - Message handling and conversation management
 //! - Prompt templates and engineering
-//! - Tool/function calling support
-//! - Web search tools (DuckDuckGo, Brave, Perplexity)
+//!
+//! Tool/function calling support has moved to `crate::tools`.
+//! Web search tools have moved to `crate::tools`.
+//! MCP integration is in `crate::mcp`.
+//! Skills (composable workflows) are in `crate::skills`.
 
 mod client;
 mod conversation;
 pub mod prompts;
-mod system_command;
-mod tools;
-mod types;
-mod web_search;
+pub(crate) mod types;
 
 pub use client::OpenRouterClient;
 pub use conversation::{Conversation, ConversationManager};
 pub use prompts::PromptTemplate;
-pub use system_command::SystemCommandTool;
-pub use tools::{Tool, ToolCall, ToolResult, ToolRegistry, ReadFileTool, WriteFileTool};
 pub use types::*;
-pub use web_search::{
-    DuckDuckGoSearchTool,
-    BraveSearchTool, BraveSearchConfig,
-    PerplexitySearchTool, PerplexityConfig,
-    SearchResult,
+
+// Re-export tools from the new location for backward compatibility
+pub use crate::tools::{
+    Tool, ToolCall, ToolResult, ToolRegistry,
+    ReadFileTool, WriteFileTool, SystemCommandTool,
+    DuckDuckGoSearchTool, BraveSearchTool, BraveSearchConfig,
+    PerplexitySearchTool, PerplexityConfig, SearchResult,
+    MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
 };

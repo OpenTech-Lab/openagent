@@ -8,11 +8,12 @@ use openagent::agent::{
     Conversation, GenerationOptions, Message as AgentMessage, Role,
     OpenRouterClient, ToolCall, ToolRegistry, ReadFileTool, WriteFileTool,
     SystemCommandTool, DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
+    MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
     prompts::Soul,
 };
 use openagent::config::Config;
-use openagent::database::{init_pool, Memory};
-use openagent::memory::{EmbeddingService, MemoryCache, MemoryRetriever};
+use openagent::database::{init_pool, Memory, MemoryType};
+use openagent::memory::{ConversationSummarizer, EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::{Error, Result};
 
 use clap::Parser;
@@ -132,6 +133,15 @@ impl TuiState {
             if let Some(perplexity) = PerplexitySearchTool::from_env() {
                 info!("Perplexity Search enabled");
                 tools.register(perplexity);
+            }
+
+            // Register memory tools if memory retriever is available
+            if let Some(ref retriever) = memory_retriever {
+                tools.register(MemorySaveTool::new(retriever.clone()));
+                tools.register(MemorySearchTool::new(retriever.clone()));
+                tools.register(MemoryListTool::new(retriever.clone()));
+                tools.register(MemoryDeleteTool::new(retriever.clone()));
+                info!("Memory tools registered");
             }
         }
 
@@ -404,9 +414,16 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
                     for tool_call in tool_calls.iter() {
                         tool_calls_made += 1;
                         
-                        let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                        let mut args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
                             .unwrap_or_else(|_| serde_json::json!({}));
-                        
+
+                        // Inject _user_id for memory tools
+                        if tool_call.function.name.starts_with("memory_") {
+                            if let Some(obj) = args.as_object_mut() {
+                                obj.insert("_user_id".to_string(), serde_json::json!(&state.user_id));
+                            }
+                        }
+
                         let call = ToolCall {
                             id: tool_call.id.clone(),
                             name: tool_call.function.name.clone(),
@@ -510,6 +527,54 @@ async fn run_repl(mut state: TuiState) -> Result<()> {
                     break;
                 }
                 "/clear" | "/c" => {
+                    // Auto-summarize before clearing if enough messages
+                    if state.conversation.message_count() >= 4 {
+                        if let Some(ref retriever) = state.memory_retriever {
+                            let messages = state.conversation.messages.clone();
+                            let summarizer = ConversationSummarizer::new(state.llm_client.clone());
+                            let retriever = retriever.clone();
+                            let uid = state.user_id.clone();
+                            tokio::spawn(async move {
+                                match summarizer.summarize(&messages).await {
+                                    Ok(episodic) => {
+                                        if episodic.summary.is_empty() {
+                                            return;
+                                        }
+                                        let memory = Memory::new(&uid, &episodic.summary)
+                                            .with_importance(0.6)
+                                            .with_memory_type(MemoryType::Episodic)
+                                            .with_source("auto:episodic")
+                                            .with_tags(episodic.topics.clone());
+                                        if let Err(e) = retriever.save_memory(&memory).await {
+                                            warn!("Failed to save episodic memory: {}", e);
+                                        } else {
+                                            info!("Auto-episodic memory saved for user={}", uid);
+                                        }
+                                        for fact in &episodic.key_facts {
+                                            let fact_memory = Memory::new(&uid, fact)
+                                                .with_importance(0.7)
+                                                .with_memory_type(MemoryType::Semantic)
+                                                .with_source("auto:extracted")
+                                                .with_tags(vec!["auto-extracted".into()]);
+                                            let _ = retriever.save_memory(&fact_memory).await;
+                                        }
+                                        for pref in &episodic.user_preferences {
+                                            let pref_memory = Memory::new(&uid, pref)
+                                                .with_importance(0.8)
+                                                .with_memory_type(MemoryType::Semantic)
+                                                .with_source("auto:extracted")
+                                                .with_tags(vec!["preference".into(), "auto-extracted".into()]);
+                                            let _ = retriever.save_memory(&pref_memory).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Auto-summarization failed: {}", e);
+                                    }
+                                }
+                            });
+                        }
+                    }
+
                     let soul = Soul::load_or_default();
                     state.conversation = Conversation::new("tui-user", &state.current_model)
                         .with_system_prompt(soul.as_system_prompt());

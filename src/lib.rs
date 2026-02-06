@@ -44,6 +44,15 @@ pub mod core;
 // Agent logic and LLM interaction
 pub mod agent;
 
+// Tools - modular tool system (system_command, file ops, search, etc.)
+pub mod tools;
+
+// MCP - Model Context Protocol client for external tool servers
+pub mod mcp;
+
+// Skills - higher-level composable agent capabilities
+pub mod skills;
+
 // Modular configuration (now a directory module)
 #[path = "config/mod.rs"]
 pub mod config;
