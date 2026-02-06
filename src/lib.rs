@@ -76,6 +76,9 @@ pub mod gateway;
 // Plugin SDK for external integrations
 pub mod plugin_sdk;
 
+// Periodic scheduler for soul evolution and task processing
+pub mod scheduler;
+
 // Re-export commonly used items
 pub use error::{Error, Result};
 

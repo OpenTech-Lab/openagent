@@ -283,6 +283,95 @@ pub mod migrations {
         .execute(pool)
         .await?;
 
+        // --- Agent soul sections table ---
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS agent_soul_sections (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                section_name TEXT NOT NULL UNIQUE,
+                section_order INTEGER NOT NULL DEFAULT 0,
+                content TEXT NOT NULL,
+                is_mutable BOOLEAN NOT NULL DEFAULT TRUE,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        "#)
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_agent_soul_sections_name ON agent_soul_sections(section_name)"
+        )
+        .execute(pool)
+        .await?;
+
+        // --- Agent tasks table ---
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id TEXT NOT NULL,
+                chat_id BIGINT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'finish', 'fail', 'cancel', 'stop')),
+                priority INTEGER NOT NULL DEFAULT 0,
+                result TEXT,
+                error_message TEXT,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ
+            )
+        "#)
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tasks_user_id ON agent_tasks(user_id)"
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status)"
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_agent_tasks_pending ON agent_tasks(status, priority DESC, created_at ASC) WHERE status = 'pending'"
+        )
+        .execute(pool)
+        .await
+        .ok(); // Ignore if partial index syntax not supported
+
+        // --- Agent status table (singleton) ---
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS agent_status (
+                id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                status TEXT NOT NULL DEFAULT 'ready'
+                    CHECK (status IN ('ready', 'processing')),
+                current_task_id UUID REFERENCES agent_tasks(id),
+                last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_scheduler_run TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        "#)
+        .execute(pool)
+        .await?;
+
+        // Seed the singleton row
+        sqlx::query(
+            "INSERT INTO agent_status (id, status) VALUES (1, 'ready') ON CONFLICT (id) DO NOTHING"
+        )
+        .execute(pool)
+        .await?;
+
         info!("Database migrations completed");
         Ok(())
     }

@@ -8,13 +8,17 @@ use openagent::agent::{
     ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
-    prompts::DEFAULT_SYSTEM_PROMPT,
+    prompts::{DEFAULT_SYSTEM_PROMPT, Soul},
 };
 use openagent::config::Config;
 use openagent::config::DmPolicy;
-use openagent::database::{init_pool, Memory, MemoryType};
+use openagent::database::{
+    init_pool, migrations, Memory, MemoryType,
+    AgentStatusStore, ConfigParamStore, ConfigValueType, SoulStore, TaskStore,
+};
 use openagent::memory::{ConversationSummarizer, EmbeddingService, MemoryCache, MemoryRetriever};
 use openagent::sandbox::{create_executor, CodeExecutor, ExecutionRequest, Language};
+use openagent::scheduler::Scheduler;
 use openagent::{Error, Result};
 
 use secrecy::ExposeSecret;
@@ -122,15 +126,23 @@ impl PairingManager {
 struct AppState {
     config: Config,
     llm_client: OpenRouterClient,
-    conversations: RwLock<ConversationManager>,
+    conversations: Arc<RwLock<ConversationManager>>,
     memory_retriever: Option<MemoryRetriever>,
     executor: Box<dyn CodeExecutor>,
-    /// Tools for DM sessions (full access)
-    dm_tools: ToolRegistry,
+    /// Tools for DM sessions (full access, Arc-shared with scheduler)
+    dm_tools: Arc<ToolRegistry>,
     /// Tools for group sessions (sandboxed)
     group_tools: ToolRegistry,
     /// Pairing manager for DM approval
     pairing: RwLock<PairingManager>,
+    /// Soul store for persistent agent identity
+    soul_store: Option<SoulStore>,
+    /// Task store for tracking user requests
+    task_store: Option<TaskStore>,
+    /// Agent status store (ready/processing)
+    status_store: Option<AgentStatusStore>,
+    /// Config parameter store for runtime settings
+    config_param_store: Option<ConfigParamStore>,
 }
 
 impl AppState {
@@ -142,26 +154,15 @@ impl AppState {
         // Initialize OpenRouter client
         let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
 
-        // Initialize conversation manager
-        let conversations = ConversationManager::new(&openrouter_config.default_model)
-            .with_system_prompt(DEFAULT_SYSTEM_PROMPT);
-
-        // Try to initialize database + memory retriever (optional)
-        let memory_retriever = match &config.storage.postgres {
+        // Try to initialize database pool (shared across all stores)
+        let pg_pool = match &config.storage.postgres {
             Some(db_config) => match init_pool(db_config).await {
                 Ok(pool) => {
-                    let store = openagent::database::MemoryStore::new(pool);
-                    match EmbeddingService::new() {
-                        Ok(embedding) => {
-                            let cache = MemoryCache::new();
-                            info!("Memory retriever initialized (embedding + cache + PG)");
-                            Some(MemoryRetriever::new(store, embedding, cache))
-                        }
-                        Err(e) => {
-                            warn!("Embedding service failed: {}. Running without memory retrieval.", e);
-                            None
-                        }
+                    // Run migrations (creates all tables including soul/tasks/status)
+                    if let Err(e) = migrations::run(&pool).await {
+                        warn!("Migration failed: {}. Some features may not work.", e);
                     }
+                    Some(pool)
                 }
                 Err(e) => {
                     warn!("Database not available: {}. Running without persistence.", e);
@@ -174,6 +175,88 @@ impl AppState {
             }
         };
 
+        // Initialize memory retriever (optional, requires DB + embeddings)
+        let memory_retriever = match &pg_pool {
+            Some(pool) => {
+                let store = openagent::database::MemoryStore::new(pool.clone());
+                match EmbeddingService::new() {
+                    Ok(embedding) => {
+                        let cache = MemoryCache::new();
+                        info!("Memory retriever initialized (embedding + cache + PG)");
+                        Some(MemoryRetriever::new(store, embedding, cache))
+                    }
+                    Err(e) => {
+                        warn!("Embedding service failed: {}. Running without memory retrieval.", e);
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
+        // Initialize soul/task/status stores (optional, requires DB)
+        let (soul_store, task_store, status_store, config_param_store) = match &pg_pool {
+            Some(pool) => {
+                let soul_store = SoulStore::new(pool.clone());
+                let task_store = TaskStore::new(pool.clone());
+                let status_store = AgentStatusStore::new(pool.clone());
+                let config_param_store = ConfigParamStore::new(pool.clone());
+
+                // Initialize soul on first run
+                match soul_store.is_initialized().await {
+                    Ok(false) => {
+                        let soul = Soul::load_or_default();
+                        match soul_store.initialize_from_content(&soul.content).await {
+                            Ok(()) => info!("Soul initialized from SOUL.md into database"),
+                            Err(e) => warn!("Failed to initialize soul in DB: {}", e),
+                        }
+                    }
+                    Ok(true) => info!("Soul loaded from database"),
+                    Err(e) => warn!("Failed to check soul status: {}", e),
+                }
+
+                // Reset agent status to ready on startup
+                let _ = status_store.set_ready().await;
+
+                // Seed scheduler config params
+                let _ = config_param_store.seed_if_absent(
+                    "scheduler", "interval_minutes", "30",
+                    ConfigValueType::Number, false,
+                    Some("Scheduler tick interval in minutes"),
+                ).await;
+                let _ = config_param_store.seed_if_absent(
+                    "scheduler", "summarization_enabled", "true",
+                    ConfigValueType::Boolean, false,
+                    Some("Enable periodic conversation summarization"),
+                ).await;
+                let _ = config_param_store.seed_if_absent(
+                    "scheduler", "task_processing_enabled", "true",
+                    ConfigValueType::Boolean, false,
+                    Some("Enable periodic pending task processing"),
+                ).await;
+
+                (Some(soul_store), Some(task_store), Some(status_store), Some(config_param_store))
+            }
+            None => (None, None, None, None),
+        };
+
+        // Build system prompt: use soul from DB if available, otherwise default
+        let system_prompt = if let Some(ref ss) = soul_store {
+            match ss.render_full_soul().await {
+                Ok(soul_content) => format!(
+                    "{}\n\n---\n\n## Agent Soul\n\n{}",
+                    DEFAULT_SYSTEM_PROMPT, soul_content
+                ),
+                Err(_) => DEFAULT_SYSTEM_PROMPT.to_string(),
+            }
+        } else {
+            DEFAULT_SYSTEM_PROMPT.to_string()
+        };
+
+        // Initialize conversation manager with DB-backed soul prompt
+        let conversations = ConversationManager::new(&openrouter_config.default_model)
+            .with_system_prompt(&system_prompt);
+
         // Initialize code executor
         let executor = create_executor(&config.sandbox).await?;
 
@@ -181,9 +264,6 @@ impl AppState {
         let mut dm_tools = ToolRegistry::new();
         dm_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
         dm_tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
-        // DM: SystemCommandTool configured based on execution environment
-        // OS mode: full access (no denylist, shell metacharacters allowed)
-        // Sandbox/Container mode: default denylist (dangerous commands blocked)
         dm_tools.register(SystemCommandTool::with_config_and_env(
             config.sandbox.allowed_dir.clone(),
             config.sandbox.agent_user.clone(),
@@ -211,7 +291,6 @@ impl AppState {
         // Initialize group tools (sandboxed - restricted commands)
         let mut group_tools = ToolRegistry::new();
         group_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
-        // Groups: SystemCommandTool with strict allowlist (only safe read commands)
         let group_system_cmd = SystemCommandTool::with_working_dir(config.sandbox.allowed_dir.clone())
             .with_allowed_commands(vec![
                 "ls".to_string(),
@@ -250,12 +329,16 @@ impl AppState {
         Ok(AppState {
             config,
             llm_client,
-            conversations: RwLock::new(conversations),
+            conversations: Arc::new(RwLock::new(conversations)),
             memory_retriever,
             executor,
-            dm_tools,
+            dm_tools: Arc::new(dm_tools),
             group_tools,
             pairing: RwLock::new(pairing),
+            soul_store,
+            task_store,
+            status_store,
+            config_param_store,
         })
     }
 
@@ -317,6 +400,26 @@ async fn main() -> Result<()> {
 
     // Initialize application state
     let state = Arc::new(AppState::new(config.clone()).await?);
+
+    // Spawn the periodic scheduler if database stores are available
+    if let (Some(ref task_store), Some(ref status_store), Some(ref soul_store), Some(ref config_param_store)) =
+        (&state.task_store, &state.status_store, &state.soul_store, &state.config_param_store)
+    {
+        let scheduler = Arc::new(Scheduler::new(
+            task_store.clone(),
+            status_store.clone(),
+            soul_store.clone(),
+            config_param_store.clone(),
+            state.llm_client.clone(),
+            state.memory_retriever.clone(),
+            state.conversations.clone(),
+            state.dm_tools.clone(),
+        ));
+        tokio::spawn(async move {
+            scheduler.run().await;
+        });
+        info!("Periodic scheduler spawned");
+    }
 
     let default_model = config.provider.openrouter.as_ref()
         .map(|o| o.default_model.as_str())
@@ -633,6 +736,22 @@ async fn handle_command(
                 SessionType::DirectMessage => "DM (full access)",
                 SessionType::Group => "Group (sandboxed)",
             };
+
+            let agent_state = if let Some(ref ss) = state.status_store {
+                match ss.state().await {
+                    Ok(s) => s.to_string(),
+                    Err(_) => "unknown".to_string(),
+                }
+            } else {
+                "no DB".to_string()
+            };
+
+            let pending_tasks = if let Some(ref ts) = state.task_store {
+                ts.count_pending().await.unwrap_or(0)
+            } else {
+                0
+            };
+
             let status = format!(
                 "🤖 *OpenAgent Status*\n\n\
                 Version: {}\n\
@@ -640,13 +759,17 @@ async fn handle_command(
                 Session: {}\n\
                 Execution: {}\n\
                 Database: {}\n\
-                Tools: {}",
+                Tools: {}\n\
+                Agent State: {}\n\
+                Pending Tasks: {}",
                 openagent::VERSION,
                 default_model,
                 session_info,
                 state.config.sandbox.execution_env,
                 if state.memory_retriever.is_some() { "Connected" } else { "Not connected" },
-                tools.count()
+                tools.count(),
+                agent_state,
+                pending_tasks,
             );
             bot.send_message(chat_id, status)
                 .parse_mode(ParseMode::MarkdownV2)
@@ -730,6 +853,30 @@ async fn handle_chat(
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
+    // Create task record for this chat message
+    let task_id = if let Some(ref task_store) = state.task_store {
+        let title = if text.len() > 100 { &text[..100] } else { text };
+        match task_store.create(user_id, Some(chat_id.0), title, text, 0).await {
+            Ok(task) => {
+                let tid = task.id;
+                let _ = task_store.start_processing(tid).await;
+                info!("Created task {} for user message", tid);
+                Some(tid)
+            }
+            Err(e) => {
+                warn!("Failed to create task: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Set agent status to processing
+    if let (Some(tid), Some(ref status_store)) = (task_id, &state.status_store) {
+        let _ = status_store.set_processing(tid).await;
+    }
+
     // Show typing indicator
     bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -810,6 +957,11 @@ async fn handle_chat(
                 error!("LLM error: {}", e);
                 bot.send_message(chat_id, format!("❌ Error: {}", e))
                     .await?;
+                // Cleanup on early return
+                if let (Some(tid), Some(ref ts)) = (task_id, &state.task_store) {
+                    let _ = ts.fail(tid, &e.to_string()).await;
+                }
+                if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
                 return Ok(());
             }
         };
@@ -820,6 +972,11 @@ async fn handle_chat(
             None => {
                 bot.send_message(chat_id, "❌ No response from LLM")
                     .await?;
+                // Cleanup on early return
+                if let (Some(tid), Some(ref ts)) = (task_id, &state.task_store) {
+                    let _ = ts.fail(tid, "No LLM response").await;
+                }
+                if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
                 return Ok(());
             }
         };
@@ -949,6 +1106,25 @@ async fn handle_chat(
     // Send response (split if too long)
     if !final_response.is_empty() {
         send_long_message(&bot, chat_id, &final_response).await?;
+    }
+
+    // Finalize task record
+    if let (Some(tid), Some(ref task_store)) = (task_id, &state.task_store) {
+        if final_response.is_empty() {
+            let _ = task_store.fail(tid, "Empty response").await;
+        } else {
+            let truncated = if final_response.len() > 2000 {
+                &final_response[..2000]
+            } else {
+                &final_response
+            };
+            let _ = task_store.finish(tid, Some(truncated)).await;
+        }
+    }
+
+    // Restore agent status to ready
+    if let Some(ref status_store) = state.status_store {
+        let _ = status_store.set_ready().await;
     }
 
     Ok(())
