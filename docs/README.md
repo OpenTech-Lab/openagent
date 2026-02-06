@@ -6,22 +6,22 @@ Welcome to the OpenAgent documentation. This documentation covers the architectu
 
 ### Architecture & Design
 
-- [Architecture Overview](./architecture.md) - High-level system architecture and design principles
-- [Core Traits](./core-traits.md) - Trait-based abstractions for loose coupling
-- [Configuration](./configuration.md) - Modular configuration system
-- [Gateway Protocol](./gateway-protocol.md) - WebSocket-based control plane
-- [Plugin SDK](./plugin-sdk.md) - Building extensions and plugins
+- [Architecture Overview](./details/architecture.md) - High-level system architecture and design principles
+- [Core Traits](./details/core-traits.md) - Trait-based abstractions for loose coupling
+- [Configuration](./details/configuration.md) - Modular configuration system
+- [Gateway Protocol](./details/gateway-protocol.md) - WebSocket-based control plane
+- [Plugin SDK](./details/plugin-sdk.md) - Building extensions and plugins
 
 ### Component Documentation
 
-- [Agent Module](./agent.md) - LLM integration and conversation management
-- [Database Module](./database.md) - Hybrid storage with PostgreSQL and OpenSearch
-- [Sandbox Module](./sandbox.md) - Multi-tier code execution environments
-- [Channels](./channels.md) - Messaging platform integrations
+- [Agent Module](./details/agent.md) - LLM integration and conversation management
+- [Database Module](./details/database.md) - Hybrid storage with PostgreSQL and OpenSearch
+- [Sandbox Module](./details/sandbox.md) - Multi-tier code execution environments
+- [Channels](./details/channels.md) - Messaging platform integrations
 
 ### Reference
 
-- [API Reference](./api-reference.md) - Complete API documentation
+- [API Reference](./details/api-reference.md) - Complete API documentation
 - [System Design](./DESIGN.md) - Comprehensive system design document (legacy)
 
 ## Quick Links
