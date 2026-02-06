@@ -1,9 +1,9 @@
 //! Sandbox module - Secure code execution environments
 //!
-//! Provides three tiers of sandboxing:
-//! - OS Mode: Restricted path execution with non-privileged permissions
-//! - Sandbox Mode: WebAssembly virtual machine using Wasmtime
-//! - Container Mode: Ephemeral Docker containers
+//! Provides three tiers of execution:
+//! - Sandbox Mode: WebAssembly virtual machine using Wasmtime (recommended)
+//! - OS Mode: Full system access with user authentication (sudo available)
+//! - Container Mode: Ephemeral Docker containers (most secure)
 
 mod container;
 mod executor;
@@ -22,7 +22,8 @@ use crate::error::Result;
 pub async fn create_executor(config: &SandboxConfig) -> Result<Box<dyn CodeExecutor>> {
     match config.execution_env {
         ExecutionEnv::Os => {
-            let executor = OsSandbox::new(config.allowed_dir.clone());
+            // OS mode: full system access, no path restrictions
+            let executor = OsSandbox::new_unrestricted(config.allowed_dir.clone());
             Ok(Box::new(executor))
         }
         ExecutionEnv::Sandbox => {

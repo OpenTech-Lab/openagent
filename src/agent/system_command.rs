@@ -28,6 +28,9 @@ pub struct SystemCommandTool {
     denied_commands: HashSet<String>,
     /// Optional user to run commands as (uses `sudo -u <user>`)
     run_as_user: Option<String>,
+    /// Allow shell metacharacters in arguments (&&, |, ;, etc.)
+    /// When true, shell injection checks are skipped (for full OS access mode)
+    allow_shell_metacharacters: bool,
 }
 
 impl Default for SystemCommandTool {
@@ -53,6 +56,7 @@ impl SystemCommandTool {
             allowed_commands: HashSet::new(),
             denied_commands: denied,
             run_as_user: None,
+            allow_shell_metacharacters: false,
         }
     }
 
@@ -76,6 +80,35 @@ impl SystemCommandTool {
         tool.working_dir = Some(working_dir);
         tool.run_as_user = agent_user;
         tool
+    }
+
+    /// Create with full OS access (no denylist, shell metacharacters allowed)
+    /// This is for OS mode where the agent acts as a co-worker with full sudo access.
+    /// Use with caution - this gives the agent unrestricted command execution.
+    pub fn with_full_access(working_dir: Option<PathBuf>) -> Self {
+        SystemCommandTool {
+            working_dir,
+            timeout_secs: 300, // Longer timeout for system operations
+            allowed_commands: HashSet::new(),
+            denied_commands: HashSet::new(), // No denied commands
+            run_as_user: None,
+            allow_shell_metacharacters: true, // Allow pipes, &&, etc.
+        }
+    }
+
+    /// Create with config, choosing full access based on execution environment
+    pub fn with_config_and_env(
+        working_dir: PathBuf,
+        agent_user: Option<String>,
+        execution_env: &str,
+    ) -> Self {
+        if execution_env == "os" {
+            // OS mode: full access, no restrictions
+            Self::with_full_access(Some(working_dir))
+        } else {
+            // Sandbox/Container mode: use default restrictions
+            Self::with_config(working_dir, agent_user)
+        }
     }
 
     /// Set the timeout in seconds
@@ -205,15 +238,17 @@ impl Tool for SystemCommandTool {
             })
             .unwrap_or_default();
 
-        // Security: Check for dangerous patterns in arguments
-        for arg in &cmd_args {
-            // Block shell injection attempts
-            if arg.contains(';') || arg.contains('|') || arg.contains('`')
-                || arg.contains("$(") || arg.contains("&&") || arg.contains("||") {
-                return Ok(ToolResult::failure(format!(
-                    "Argument '{}' contains potentially dangerous shell characters",
-                    arg
-                )));
+        // Security: Check for dangerous patterns in arguments (unless full access mode)
+        if !self.allow_shell_metacharacters {
+            for arg in &cmd_args {
+                // Block shell injection attempts
+                if arg.contains(';') || arg.contains('|') || arg.contains('`')
+                    || arg.contains("$(") || arg.contains("&&") || arg.contains("||") {
+                    return Ok(ToolResult::failure(format!(
+                        "Argument '{}' contains potentially dangerous shell characters",
+                        arg
+                    )));
+                }
             }
         }
 

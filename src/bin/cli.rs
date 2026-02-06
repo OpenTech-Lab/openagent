@@ -1060,18 +1060,18 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     println!("   Choose how the agent executes code:");
 
     let sandbox_options = &[
-        "OS Mode       ← Recommended (simple, runs in restricted directory)",
-        "Sandbox Mode  ← WebAssembly isolation (more secure)",
-        "Container     ← Docker containers (most secure, requires Docker)",
+        "Sandbox Mode  ← Recommended (run with your user authentication, simple, runs in restricted directory)",
+        "OS Mode       ← full authentication (as your co-worker, sudo is available)",
+        "Container     ← Docker containers (most secure, as default when installing via Docker)",
     ];
 
     let sandbox_choice = prompt_menu("Execution environment:", sandbox_options, 0)?;
 
     let execution_env = match sandbox_choice {
-        0 => "os",
-        1 => "sandbox",
+        0 => "sandbox",
+        1 => "os",
         2 => "container",
-        _ => "os",
+        _ => "sandbox",
     };
     env_vars.insert("EXECUTION_ENV".to_string(), execution_env.to_string());
 

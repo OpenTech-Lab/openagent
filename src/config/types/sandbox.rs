@@ -69,12 +69,12 @@ fn default_max_output() -> usize {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionEnv {
-    /// OS sandbox (restricted paths)
+    /// OS mode (full system access, sudo available - acts as your co-worker)
     Os,
-    /// WebAssembly sandbox (recommended)
+    /// WebAssembly sandbox (recommended - runs with user auth in restricted directory)
     #[default]
     Sandbox,
-    /// Container sandbox (Docker)
+    /// Container sandbox (Docker - most secure)
     Container,
 }
 

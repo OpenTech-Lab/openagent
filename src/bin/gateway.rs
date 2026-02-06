@@ -180,11 +180,13 @@ impl AppState {
         let mut dm_tools = ToolRegistry::new();
         dm_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
         dm_tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
-        // DM: SystemCommandTool with default denylist (dangerous commands blocked)
-        // If agent_user is configured, commands run as that user (passwordless sudo)
-        dm_tools.register(SystemCommandTool::with_config(
+        // DM: SystemCommandTool configured based on execution environment
+        // OS mode: full access (no denylist, shell metacharacters allowed)
+        // Sandbox/Container mode: default denylist (dangerous commands blocked)
+        dm_tools.register(SystemCommandTool::with_config_and_env(
             config.sandbox.allowed_dir.clone(),
             config.sandbox.agent_user.clone(),
+            &config.sandbox.execution_env.to_string(),
         ));
         dm_tools.register(DuckDuckGoSearchTool::new());
         if let Some(brave) = BraveSearchTool::from_env() {

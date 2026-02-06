@@ -118,9 +118,10 @@ impl TuiState {
         if !args.no_tools {
             tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
             tools.register(WriteFileTool::new(config.sandbox.allowed_dir.clone()));
-            tools.register(SystemCommandTool::with_config(
+            tools.register(SystemCommandTool::with_config_and_env(
                 config.sandbox.allowed_dir.clone(),
                 config.sandbox.agent_user.clone(),
+                &config.sandbox.execution_env.to_string(),
             ));
             tools.register(DuckDuckGoSearchTool::new());
             

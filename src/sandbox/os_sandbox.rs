@@ -1,7 +1,8 @@
-//! OS-level sandboxed execution
+//! OS-level code execution
 //!
-//! Runs code in a restricted directory with minimal permissions.
-//! This is the least secure option but works without additional dependencies.
+//! Runs code either in a restricted directory (sandbox mode) or with full
+//! system access (OS mode). In OS mode, the agent can execute code anywhere
+//! on the system, similar to a co-worker with full permissions.
 
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -18,12 +19,25 @@ use crate::sandbox::executor::{CodeExecutor, ExecutionRequest, ExecutionResult, 
 pub struct OsSandbox {
     /// Allowed directory for execution
     allowed_dir: PathBuf,
+    /// When true, skip path validation and allow execution anywhere
+    unrestricted: bool,
 }
 
 impl OsSandbox {
-    /// Create a new OS sandbox
+    /// Create a new OS sandbox (restricted to allowed_dir)
     pub fn new(allowed_dir: PathBuf) -> Self {
-        OsSandbox { allowed_dir }
+        OsSandbox {
+            allowed_dir,
+            unrestricted: false,
+        }
+    }
+
+    /// Create a new OS sandbox with full system access (no path restrictions)
+    pub fn new_unrestricted(allowed_dir: PathBuf) -> Self {
+        OsSandbox {
+            allowed_dir,
+            unrestricted: true,
+        }
     }
 
     /// Get the command for a language
@@ -55,6 +69,11 @@ impl OsSandbox {
 
     /// Validate that a path is within the allowed directory
     fn validate_path(&self, path: &PathBuf) -> Result<()> {
+        // Skip validation in unrestricted mode
+        if self.unrestricted {
+            return Ok(());
+        }
+
         let canonical = path
             .canonicalize()
             .unwrap_or_else(|_| path.clone());
@@ -102,9 +121,19 @@ impl CodeExecutor for OsSandbox {
         // Determine working directory
         let working_dir = match &request.working_dir {
             Some(dir) => {
-                let path = self.allowed_dir.join(dir);
-                self.validate_path(&path)?;
-                path
+                if self.unrestricted {
+                    // In unrestricted mode, treat as absolute or relative to home
+                    let path = PathBuf::from(dir);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        self.allowed_dir.join(dir)
+                    }
+                } else {
+                    let path = self.allowed_dir.join(dir);
+                    self.validate_path(&path)?;
+                    path
+                }
             }
             None => self.allowed_dir.clone(),
         };
