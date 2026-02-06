@@ -1,0 +1,66 @@
+{
+  // OpenAgent Configuration
+  // Copy this file to ~/.config/openagent/config.json and fill in your values.
+  // Secret values can also be set via environment variables (highest precedence).
+
+  "agent": {
+    "model": "anthropic/claude-sonnet-4",
+    "max_context_tokens": 200000,
+    "thinking_level": "medium",
+    "verbose": false
+  },
+
+  "provider": {
+    "default": "openrouter",
+    "openrouter": {
+      "api_key": "YOUR_OPENROUTER_API_KEY",
+      "default_model": "anthropic/claude-sonnet-4",
+      "base_url": "https://openrouter.ai/api/v1",
+      "site_url": "https://your-site.com",
+      "site_name": "OpenAgent",
+      "timeout_secs": 600,
+      "max_retries": 5
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "allow_from": [],
+      "dm_policy": "open",
+      "groups": {},
+      "use_long_polling": true
+    }
+  },
+
+  "storage": {
+    "backend": "postgres",
+    "postgres": {
+      "url": "postgres://openagent:openagent@localhost:5432/openagent",
+      "max_connections": 5,
+      "connect_timeout_secs": 30,
+      "enable_pgvector": true
+    }
+  },
+
+  "sandbox": {
+    "execution_env": "sandbox",
+    "allowed_dir": "./workspace",
+    "container": {
+      "image": "python:3.12-slim",
+      "network": "none",
+      "memory_limit": "512m",
+      "cpu_limit": 1.0
+    },
+    "default_timeout_secs": 30,
+    "max_output_bytes": 1048576
+  },
+
+  "gateway": {
+    "port": 18789,
+    "bind": "127.0.0.1",
+    "websocket": true
+  },
+
+  "plugins": {}
+}

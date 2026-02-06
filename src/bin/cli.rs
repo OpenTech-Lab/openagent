@@ -206,45 +206,11 @@ fn write_env_file(path: &Path, vars: &HashMap<String, String>) -> Result<()> {
         )));
     }
 
-    let template = include_str!("../../.env.example");
     let mut output = String::new();
-    let mut written_keys = std::collections::HashSet::new();
 
-    // Process template line by line, replacing values where we have them
-    for line in template.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            // Keep comments and empty lines as-is
-            output.push_str(line);
-            output.push('\n');
-            continue;
-        }
-
-        // Check if this is a KEY=VALUE line
-        if let Some(pos) = trimmed.find('=') {
-            let key = trimmed[..pos].trim();
-
-            if let Some(value) = vars.get(key) {
-                // Use our value
-                output.push_str(&format!("{}={}\n", key, value));
-                written_keys.insert(key.to_string());
-            } else {
-                // Keep original line
-                output.push_str(line);
-                output.push('\n');
-            }
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-
-    // Add any new keys that weren't in the template
+    // Write all key=value pairs
     for (key, value) in vars {
-        if !written_keys.contains(key) {
-            output.push_str(&format!("{}={}\n", key, value));
-        }
+        output.push_str(&format!("{}={}\n", key, value));
     }
 
     // Write with explicit sync to ensure data is flushed to disk
@@ -1729,9 +1695,9 @@ fn update_env_var(key: &str, value: &str) -> Result<()> {
     write_env_file(env_path, &vars)
 }
 
-/// Generate sample configuration
+/// Generate sample configuration (JSON format)
 fn init_config() -> Result<()> {
-    let example = include_str!("../../.env.example");
+    let example = include_str!("../../config.json.example");
     println!("{}", example);
     Ok(())
 }

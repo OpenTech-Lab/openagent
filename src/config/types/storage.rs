@@ -5,6 +5,10 @@
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+fn default_secret() -> SecretString {
+    SecretString::from(String::new())
+}
+
 /// Storage configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -49,7 +53,7 @@ pub enum StorageBackendType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {
     /// Database URL
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub url: SecretString,
     /// Maximum connections in pool
     #[serde(default = "default_max_connections")]

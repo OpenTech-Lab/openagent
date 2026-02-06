@@ -6,6 +6,10 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_secret() -> SecretString {
+    SecretString::from(String::new())
+}
+
 /// All channel configurations
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChannelsConfig {
@@ -29,7 +33,7 @@ pub struct ChannelsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramConfig {
     /// Bot token
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub bot_token: SecretString,
     /// Allowed user IDs (empty = allow all with pairing)
     #[serde(default)]
@@ -57,7 +61,7 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordConfig {
     /// Bot token
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub token: SecretString,
     /// Application ID
     pub application_id: Option<String>,
@@ -80,10 +84,10 @@ fn default_media_size() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackConfig {
     /// Bot token
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub bot_token: SecretString,
     /// App token
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub app_token: SecretString,
     /// Signing secret
     pub signing_secret: Option<String>,
@@ -109,7 +113,7 @@ pub struct WhatsAppConfig {
 }
 
 /// WebChat configuration
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebChatConfig {
     /// Enable WebChat
     #[serde(default = "default_true")]
@@ -117,6 +121,15 @@ pub struct WebChatConfig {
     /// Path for WebChat UI
     #[serde(default = "default_webchat_path")]
     pub path: String,
+}
+
+impl Default for WebChatConfig {
+    fn default() -> Self {
+        WebChatConfig {
+            enabled: true,
+            path: default_webchat_path(),
+        }
+    }
 }
 
 fn default_webchat_path() -> String {

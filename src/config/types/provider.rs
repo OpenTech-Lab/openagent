@@ -39,11 +39,15 @@ fn default_provider() -> String {
     "openrouter".to_string()
 }
 
+fn default_secret() -> SecretString {
+    SecretString::from(String::new())
+}
+
 /// OpenRouter configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenRouterConfig {
     /// API key
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub api_key: SecretString,
     /// Default model
     #[serde(default = "default_openrouter_model")]
@@ -83,7 +87,7 @@ fn default_retries() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     /// API key
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub api_key: SecretString,
     /// Default model
     #[serde(default = "default_anthropic_model")]
@@ -108,7 +112,7 @@ fn default_anthropic_url() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIConfig {
     /// API key
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default = "default_secret")]
     pub api_key: SecretString,
     /// Default model
     #[serde(default = "default_openai_model")]
@@ -141,7 +145,7 @@ pub struct CustomProviderConfig {
     /// Base URL
     pub base_url: String,
     /// API key
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, default)]
     pub api_key: Option<SecretString>,
     /// Default model
     pub default_model: String,

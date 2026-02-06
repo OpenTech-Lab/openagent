@@ -254,6 +254,31 @@ pub mod migrations {
         .await
         .ok(); // Ignore if no rows
 
+        // --- Config params table ---
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS config_params (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                category TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                value_type TEXT NOT NULL DEFAULT 'string',
+                is_secret BOOLEAN NOT NULL DEFAULT FALSE,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(category, key)
+            )
+        "#)
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_config_params_category ON config_params(category)"
+        )
+        .execute(pool)
+        .await?;
+
         info!("Database migrations completed");
         Ok(())
     }

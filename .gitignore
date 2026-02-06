@@ -7,10 +7,14 @@ release/
 # Cargo lock file (include for binaries, exclude for libraries)
 # Cargo.lock
 
-# Environment files
+# Environment files (legacy)
 .env
 .env.local
 .env.*.local
+
+# Config files (contain secrets)
+config.json
+config.toml
 
 # Agent instances (Docker multi-agent)
 .agents/

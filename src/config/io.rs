@@ -22,16 +22,22 @@ pub struct ConfigSnapshot {
     pub issues: Vec<String>,
 }
 
-/// Load configuration from the default path
+/// Load configuration with layered precedence:
+/// 1. Config file (config.json) if it exists, otherwise defaults
+/// 2. Environment variable overrides (includes .env for backward compat)
 pub fn load_config() -> Result<Config> {
     let config_path = super::paths::config_path();
 
-    if config_path.exists() {
-        load_config_from_path(&config_path)
+    let mut config = if config_path.exists() {
+        load_config_from_path(&config_path)?
     } else {
-        // Try to load from environment variables
-        load_config_from_env()
-    }
+        Config::default()
+    };
+
+    // Apply environment variable overrides (highest precedence)
+    apply_env_overrides(&mut config);
+
+    Ok(config)
 }
 
 /// Load configuration from a specific path
@@ -56,77 +62,143 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// Load configuration from environment variables
+/// Load configuration from environment variables (backward compat wrapper)
+#[allow(dead_code)]
 pub fn load_config_from_env() -> Result<Config> {
+    let mut config = Config::default();
+    apply_env_overrides(&mut config);
+    Ok(config)
+}
+
+/// Apply environment variable overrides to an existing config.
+///
+/// This loads `.env` file (for backward compat) and overlays any set
+/// environment variables onto the config. Env vars have the highest
+/// precedence in the config layering: defaults < file < DB < env.
+pub fn apply_env_overrides(config: &mut Config) {
     use secrecy::SecretString;
 
-    // Load .env file if it exists
+    // Load .env file if it exists (backward compat)
     dotenvy::dotenv().ok();
 
-    let mut config = Config::default();
-
-    // Load OpenRouter config
+    // OpenRouter overrides
     if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-        config.provider.openrouter = Some(super::types::provider::OpenRouterConfig {
-            api_key: SecretString::from(api_key),
-            default_model: std::env::var("DEFAULT_MODEL")
-                .or_else(|_| std::env::var("OPENROUTER_MODEL"))
-                .unwrap_or_else(|_| "anthropic/claude-sonnet-4".to_string()),
-            base_url: std::env::var("OPENROUTER_BASE_URL")
-                .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string()),
-            site_url: std::env::var("OPENROUTER_SITE_URL").ok(),
-            site_name: std::env::var("OPENROUTER_SITE_NAME").ok(),
-            timeout_secs: std::env::var("OPENROUTER_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(120),
-            max_retries: std::env::var("OPENROUTER_MAX_RETRIES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
+        let or = config.provider.openrouter.get_or_insert_with(|| {
+            super::types::provider::OpenRouterConfig {
+                api_key: SecretString::from(String::new()),
+                default_model: "anthropic/claude-sonnet-4".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                site_url: None,
+                site_name: None,
+                timeout_secs: 120,
+                max_retries: 3,
+            }
         });
+        or.api_key = SecretString::from(api_key);
+    }
+    if let Ok(model) = std::env::var("DEFAULT_MODEL").or_else(|_| std::env::var("OPENROUTER_MODEL")) {
+        if let Some(ref mut or) = config.provider.openrouter {
+            or.default_model = model;
+        }
+    }
+    if let Ok(url) = std::env::var("OPENROUTER_BASE_URL") {
+        if let Some(ref mut or) = config.provider.openrouter {
+            or.base_url = url;
+        }
+    }
+    if let Ok(url) = std::env::var("OPENROUTER_SITE_URL") {
+        if let Some(ref mut or) = config.provider.openrouter {
+            or.site_url = Some(url);
+        }
+    }
+    if let Ok(name) = std::env::var("OPENROUTER_SITE_NAME") {
+        if let Some(ref mut or) = config.provider.openrouter {
+            or.site_name = Some(name);
+        }
+    }
+    if let Ok(timeout) = std::env::var("OPENROUTER_TIMEOUT") {
+        if let Some(ref mut or) = config.provider.openrouter {
+            if let Ok(v) = timeout.parse() {
+                or.timeout_secs = v;
+            }
+        }
+    }
+    if let Ok(retries) = std::env::var("OPENROUTER_MAX_RETRIES") {
+        if let Some(ref mut or) = config.provider.openrouter {
+            if let Ok(v) = retries.parse() {
+                or.max_retries = v;
+            }
+        }
     }
 
-    // Load Telegram config
+    // Telegram overrides
     if let Ok(bot_token) = std::env::var("TELEGRAM_BOT_TOKEN") {
-        config.channels.telegram = Some(super::types::channel::TelegramConfig {
-            bot_token: SecretString::from(bot_token),
-            allow_from: std::env::var("TELEGRAM_ALLOWED_USERS")
-                .ok()
-                .map(|s| {
-                    s.split(',')
-                        .filter_map(|id| id.trim().parse().ok())
-                        .collect()
-                })
-                .unwrap_or_default(),
-            dm_policy: super::types::channel::DmPolicy::Open,
-            groups: std::collections::HashMap::new(),
-            use_long_polling: std::env::var("TELEGRAM_USE_WEBHOOK")
-                .map(|v| v != "true" && v != "1")
-                .unwrap_or(true),
-            webhook_url: std::env::var("TELEGRAM_WEBHOOK_URL").ok(),
-            webhook_secret: std::env::var("TELEGRAM_WEBHOOK_SECRET").ok(),
+        let tg = config.channels.telegram.get_or_insert_with(|| {
+            super::types::channel::TelegramConfig {
+                bot_token: SecretString::from(String::new()),
+                allow_from: Vec::new(),
+                dm_policy: super::types::channel::DmPolicy::Open,
+                groups: std::collections::HashMap::new(),
+                use_long_polling: true,
+                webhook_url: None,
+                webhook_secret: None,
+            }
         });
+        tg.bot_token = SecretString::from(bot_token);
+    }
+    if let Ok(users) = std::env::var("TELEGRAM_ALLOWED_USERS") {
+        if let Some(ref mut tg) = config.channels.telegram {
+            tg.allow_from = users
+                .split(',')
+                .filter_map(|id| id.trim().parse().ok())
+                .collect();
+        }
+    }
+    if let Ok(v) = std::env::var("TELEGRAM_USE_WEBHOOK") {
+        if let Some(ref mut tg) = config.channels.telegram {
+            tg.use_long_polling = v != "true" && v != "1";
+        }
+    }
+    if let Ok(url) = std::env::var("TELEGRAM_WEBHOOK_URL") {
+        if let Some(ref mut tg) = config.channels.telegram {
+            tg.webhook_url = Some(url);
+        }
+    }
+    if let Ok(secret) = std::env::var("TELEGRAM_WEBHOOK_SECRET") {
+        if let Some(ref mut tg) = config.channels.telegram {
+            tg.webhook_secret = Some(secret);
+        }
     }
 
-    // Load database config
+    // Database overrides
     if let Ok(database_url) = std::env::var("DATABASE_URL") {
-        config.storage.postgres = Some(super::types::storage::PostgresConfig {
-            url: SecretString::from(database_url),
-            max_connections: std::env::var("DATABASE_MAX_CONNECTIONS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
-            connect_timeout_secs: std::env::var("DATABASE_TIMEOUT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30),
-            enable_pgvector: true,
+        let pg = config.storage.postgres.get_or_insert_with(|| {
+            super::types::storage::PostgresConfig {
+                url: SecretString::from(String::new()),
+                max_connections: 5,
+                connect_timeout_secs: 30,
+                enable_pgvector: true,
+            }
         });
+        pg.url = SecretString::from(database_url);
         config.storage.backend = super::types::storage::StorageBackendType::Postgres;
     }
+    if let Ok(max_conn) = std::env::var("DATABASE_MAX_CONNECTIONS") {
+        if let Some(ref mut pg) = config.storage.postgres {
+            if let Ok(v) = max_conn.parse() {
+                pg.max_connections = v;
+            }
+        }
+    }
+    if let Ok(timeout) = std::env::var("DATABASE_TIMEOUT") {
+        if let Some(ref mut pg) = config.storage.postgres {
+            if let Ok(v) = timeout.parse() {
+                pg.connect_timeout_secs = v;
+            }
+        }
+    }
 
-    // Load sandbox config
+    // Sandbox overrides
     if let Ok(env_str) = std::env::var("EXECUTION_ENV") {
         if let Ok(exec_env) = env_str.parse() {
             config.sandbox.execution_env = exec_env;
@@ -136,14 +208,12 @@ pub fn load_config_from_env() -> Result<Config> {
         config.sandbox.allowed_dir = std::path::PathBuf::from(allowed_dir);
     }
 
-    // Load gateway config
+    // Gateway overrides
     if let Ok(port) = std::env::var("GATEWAY_PORT") {
         if let Ok(port) = port.parse() {
             config.gateway.port = port;
         }
     }
-
-    Ok(config)
 }
 
 /// Save configuration to a file

@@ -42,6 +42,6 @@ pub use types::sandbox::{
 };
 
 // Re-export IO and utilities
-pub use io::{load_config, save_config, ConfigSnapshot};
+pub use io::{load_config, save_config, apply_env_overrides, ConfigSnapshot};
 pub use paths::{config_dir, config_path, state_dir, workspace_dir};
 pub use validation::{validate_config, ConfigValidationResult};
