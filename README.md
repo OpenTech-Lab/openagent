@@ -127,8 +127,6 @@ cd openagent
 # Install dependencies (Rust toolchain & pnpm packages)
 pnpm install
 
-# Compile the Rust binaries
-pnpm build
 ```
 
 #### Interactive Setup Wizard
@@ -287,14 +285,14 @@ Containers created:
 ## ⚙️ CLI Commands
 
 ```bash
+# Compile the Rust binaries
+pnpm build
+
 # Interactive main menu
 pnpm openagent
 
 # Setup wizard
 pnpm openagent onboard
-
-# Initialize .env file
-pnpm openagent init
 
 # Interactive chat (simple)
 pnpm openagent chat

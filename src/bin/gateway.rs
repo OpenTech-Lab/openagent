@@ -24,7 +24,7 @@ use teloxide::prelude::*;
 use teloxide::types::{ChatKind, ParseMode};
 use teloxide::utils::command::BotCommands;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Bot commands
 #[allow(dead_code)]
@@ -765,6 +765,7 @@ async fn handle_chat(
         SessionType::Group => "Group",
     };
     info!("Starting agent loop ({}) with {} tools available", session_label, tool_definitions.len());
+    debug!("User message: {:?}", text);
 
     // Maximum iterations to prevent infinite loops
     // Increased to support multi-step tasks (e.g., apt update, apt install, service start)
@@ -834,6 +835,7 @@ async fn handle_chat(
         if finish_reason == "stop" || finish_reason == "end_turn" {
             final_response = choice.message.content.clone();
             info!("LLM finished with reason: {}", finish_reason);
+            debug!("Agent reply: {}", &final_response[..final_response.len().min(500)]);
 
             // Store assistant response
             {
@@ -873,6 +875,7 @@ async fn handle_chat(
                         };
 
                         info!("Executing tool: {} ({}) (call #{}/{})", tool_name, session_label, tool_calls_made, MAX_TOOL_CALLS);
+                        debug!("Tool {} arguments: {}", tool_name, tool_call.function.arguments);
 
                         // Show typing while executing tool
                         let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
@@ -898,6 +901,7 @@ async fn handle_chat(
                             Ok(r) => {
                                 let s = r.to_string();
                                 info!("Tool {} succeeded, result length: {} chars", tool_name, s.len());
+                                debug!("Tool {} result: {}", tool_name, &s[..s.len().min(1000)]);
                                 s
                             },
                             Err(e) => {
@@ -921,6 +925,7 @@ async fn handle_chat(
         if !choice.message.content.is_empty() {
             final_response = choice.message.content.clone();
             info!("LLM returned content without tool calls, treating as final");
+            debug!("Agent reply: {}", &final_response[..final_response.len().min(500)]);
 
             // Store assistant response in conversation
             {

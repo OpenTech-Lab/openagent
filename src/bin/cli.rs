@@ -599,13 +599,6 @@ fn init_env(force: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Check if template exists
-    if !Path::new(".env.example").exists() {
-        println!("❌ .env.example not found.");
-        println!("   Make sure you're in the OpenAgent project directory.");
-        return Err(Error::Config("Missing .env.example".to_string()));
-    }
-
     // Find free port
     print!("Finding available port... ");
     io::stdout().flush()?;
@@ -670,13 +663,6 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     } else {
         HashMap::new()
     };
-
-    // Check if template exists
-    if !Path::new(".env.example").exists() {
-        println!("❌ .env.example not found.");
-        println!("   Make sure you're in the OpenAgent project directory.");
-        return Err(Error::Config("Missing .env.example".to_string()));
-    }
 
     let total_steps = 5;
 

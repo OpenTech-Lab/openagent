@@ -164,7 +164,7 @@ pub(crate) mod sql {
         SELECT id, user_id, content, summary, importance, tags,
                memory_type, metadata, source,
                created_at, updated_at, accessed_at, access_count,
-               1 - (embedding <=> $1) as similarity
+               (1 - (embedding <=> $1))::REAL as similarity
         FROM memories
         WHERE user_id = $2 AND embedding IS NOT NULL
           AND 1 - (embedding <=> $1) > $3
@@ -203,7 +203,7 @@ pub(crate) mod sql {
         SELECT id, user_id, content, summary, importance, tags,
                memory_type, metadata, source,
                created_at, updated_at, accessed_at, access_count,
-               1 - (embedding <=> $1) as similarity
+               (1 - (embedding <=> $1))::REAL as similarity
         FROM memories
         WHERE user_id = $2 AND embedding IS NOT NULL
           AND 1 - (embedding <=> $1) > $3

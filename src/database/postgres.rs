@@ -134,6 +134,10 @@ pub mod migrations {
         .execute(pool)
         .await?;
 
+        // Fix embedding column dimensions if they were created with a different size
+        fix_vector_dimensions(pool, "messages", 384).await;
+        fix_vector_dimensions(pool, "memories", 384).await;
+
         // Create indexes (each must be a separate query for SQLx)
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
             .execute(pool)
@@ -281,6 +285,70 @@ pub mod migrations {
 
         info!("Database migrations completed");
         Ok(())
+    }
+
+    /// Check if a table's embedding column has the expected vector dimensions.
+    /// If mismatched, clear incompatible embeddings and alter the column.
+    async fn fix_vector_dimensions(pool: &PgPool, table: &str, expected_dims: i32) {
+        // Query pg_attribute + atttypmod to get the declared vector dimension.
+        // For pgvector, atttypmod stores the dimension count directly.
+        let query = format!(
+            "SELECT atttypmod FROM pg_attribute \
+             WHERE attrelid = '{}'::regclass \
+               AND attname = 'embedding' \
+               AND atttypmod > 0",
+            table
+        );
+        let row: Option<(i32,)> = match sqlx::query_as(&query).fetch_optional(pool).await {
+            Ok(r) => r,
+            Err(_) => return, // table or column doesn't exist yet
+        };
+
+        let Some((current_dims,)) = row else { return };
+
+        if current_dims == expected_dims {
+            return;
+        }
+
+        warn!(
+            "Table '{}' embedding column has {} dimensions, expected {}. Migrating...",
+            table, current_dims, expected_dims
+        );
+
+        // Drop the IVFFlat index first (it's dimension-specific)
+        let drop_idx = format!("DROP INDEX IF EXISTS idx_{}_embedding", table);
+        let _ = sqlx::query(&drop_idx).execute(pool).await;
+
+        // Clear incompatible embeddings — they can't be used with different dimensions
+        let clear = format!("UPDATE {} SET embedding = NULL WHERE embedding IS NOT NULL", table);
+        match sqlx::query(&clear).execute(pool).await {
+            Ok(r) => {
+                let n = r.rows_affected();
+                if n > 0 {
+                    warn!("Cleared {} incompatible embeddings from '{}'", n, table);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to clear embeddings in '{}': {}", table, e);
+                return;
+            }
+        }
+
+        // Alter the column to the correct dimension
+        let alter = format!(
+            "ALTER TABLE {} ALTER COLUMN embedding TYPE vector({})",
+            table, expected_dims
+        );
+        match sqlx::query(&alter).execute(pool).await {
+            Ok(_) => info!(
+                "Migrated '{}' embedding column from {} to {} dimensions",
+                table, current_dims, expected_dims
+            ),
+            Err(e) => warn!(
+                "Failed to alter '{}' embedding column: {}",
+                table, e
+            ),
+        }
     }
 }
 
