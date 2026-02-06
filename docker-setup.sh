@@ -202,6 +202,7 @@ services:
       - ./.env:/app/.env:ro
       - ./SOUL.md:/app/SOUL.md:rw
       - ./workspace:/app/workspace:rw
+      - openagent-${AGENT_NAME}-model-cache:/app/.cache
     environment:
       - RUST_LOG=\${RUST_LOG:-warn,openagent=info}
       - AGENT_NAME=${AGENT_NAME}
@@ -223,6 +224,7 @@ services:
       - ./.env:/app/.env:rw
       - ./SOUL.md:/app/SOUL.md:rw
       - ./workspace:/app/workspace:rw
+      - openagent-${AGENT_NAME}-model-cache:/app/.cache
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
@@ -249,6 +251,7 @@ services:
       - ./.env:/app/.env:ro
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
+      - openagent-${AGENT_NAME}-model-cache:/app/.cache
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
@@ -296,6 +299,7 @@ networks:
 # ==============================================================================
 volumes:
   openagent-${AGENT_NAME}-postgres-data:
+  openagent-${AGENT_NAME}-model-cache:
 EOF
 
     success "Generated docker-compose.yml for agent '${AGENT_NAME}'"

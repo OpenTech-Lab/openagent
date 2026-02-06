@@ -22,6 +22,7 @@ services:
       - ./.env:/app/.env:ro
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
+      - openagent-model-cache:/app/.cache
     environment:
       - RUST_LOG=${RUST_LOG:-warn,openagent=info}
     networks:
@@ -42,6 +43,7 @@ services:
       - ./.env:/app/.env:ro
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
+      - openagent-model-cache:/app/.cache
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - RUST_LOG=${RUST_LOG:-info,openagent=debug}
@@ -67,6 +69,7 @@ services:
       - ./.env:/app/.env:ro
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
+      - openagent-model-cache:/app/.cache
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - RUST_LOG=${RUST_LOG:-info,openagent=debug}
@@ -113,3 +116,4 @@ networks:
 # ==============================================================================
 volumes:
   openagent-postgres-data:
+  openagent-model-cache:

@@ -45,6 +45,10 @@ COPY .env.example ./
 # Build the actual binaries
 RUN cargo build --release
 
+# Collect ONNX Runtime shared library (needed by fastembed at runtime)
+RUN mkdir -p /app/onnxruntime && \
+    find target/release/build -name "libonnxruntime.so*" -exec cp {} /app/onnxruntime/ \;
+
 # Stage 2: Runtime environment
 FROM debian:bookworm-slim AS runtime
 
@@ -52,6 +56,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    libgomp1 \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
@@ -62,17 +67,22 @@ COPY --from=builder /app/target/release/openagent /usr/local/bin/openagent
 COPY --from=builder /app/target/release/openagent-gateway /usr/local/bin/openagent-gateway
 COPY --from=builder /app/target/release/openagent-tui /usr/local/bin/openagent-tui
 
+# Copy ONNX Runtime library for fastembed
+COPY --from=builder /app/onnxruntime/ /usr/lib/
+RUN ldconfig
+
 # Copy essential files
 COPY --from=builder /app/SOUL.md /app/SOUL.md
 COPY --from=builder /app/migrations /app/migrations
 COPY --from=builder /app/.env.example /app/.env.example
 
-# Create workspace directory
-RUN mkdir -p /app/workspace
+# Create workspace directory and model cache directory
+RUN mkdir -p /app/workspace /app/.cache
 
 # Set environment variables
 ENV RUST_LOG=info,openagent=debug
 ENV ALLOWED_DIR=/app/workspace
+ENV HF_HOME=/app/.cache
 
 # Default command (can be overridden)
 ENTRYPOINT ["openagent"]
