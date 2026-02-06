@@ -350,24 +350,22 @@ pnpm openagent run python "print('hello')"
 
 ## ⚙️ Environment Configuration
 
-Create a `.env` file in the root directory. OpenAgent is designed to work with **OpenRouter** out of the box.
+OpenAgent is designed to work with **OpenRouter** out of the box.
 
-```env
-# AI Configuration (OpenRouter)
-OPENROUTER_API_KEY=your_openrouter_key_here
-DEFAULT_MODEL=anthropic/claude-3.5-sonnet
+```json
+{
+  // OpenAgent Configuration
+  // Copy this file to ~/.config/openagent/config.json and fill in your values.
+  // Secret values can also be set via environment variables (highest precedence).
 
-# Messaging
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-
-# Databases (auto-configured if using Docker setup)
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/openagent
-OPENSEARCH_URL=http://localhost:9200
-
-# Execution Security
-# Options: 'os' (local dir), 'sandbox' (Wasm), 'container' (Docker)
-EXECUTION_ENV=os
-ALLOWED_DIR=/tmp/openagent-workspace
+  "agent": {
+    "model": "anthropic/claude-sonnet-4",
+    "max_context_tokens": 200000,
+    "thinking_level": "medium",
+    "verbose": false
+  }
+  // ...
+}
 ```
 
 ---

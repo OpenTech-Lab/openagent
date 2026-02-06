@@ -12,11 +12,13 @@
 
 mod client;
 mod conversation;
+pub mod loop_guard;
 pub mod prompts;
 pub(crate) mod types;
 
 pub use client::OpenRouterClient;
 pub use conversation::{Conversation, ConversationManager};
+pub use loop_guard::LoopGuard;
 pub use prompts::PromptTemplate;
 pub use types::*;
 

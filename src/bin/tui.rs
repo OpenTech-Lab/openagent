@@ -5,7 +5,7 @@
 //! Optionally connects to PostgreSQL for persistent memory.
 
 use openagent::agent::{
-    Conversation, GenerationOptions, Message as AgentMessage, Role,
+    Conversation, GenerationOptions, LoopGuard, Message as AgentMessage, Role,
     OpenRouterClient, ToolCall, ToolRegistry, ReadFileTool, WriteFileTool,
     SystemCommandTool, DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
@@ -347,6 +347,7 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
     let mut iteration = 0;
     let mut tool_calls_made = 0u32;
     let mut final_response = String::new();
+    let mut loop_guard = LoopGuard::default();
     
     loop {
         iteration += 1;
@@ -451,8 +452,19 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
                         
                         // Add tool result to messages
                         messages.push(AgentMessage::tool(&tool_call.id, &result_content));
+
+                        // Check for stuck loops
+                        if let Some(hint) = loop_guard.record(
+                            &tool_call.function.name,
+                            &tool_call.function.arguments,
+                            &result_content,
+                        ) {
+                            warn!("Loop guard triggered for tool '{}'", tool_call.function.name);
+                            println!("   {} {}", style("⚠").yellow(), style("Repetition detected, forcing reconsideration").dim());
+                            messages.push(AgentMessage::user(&hint));
+                        }
                     }
-                    
+
                     continue;
                 }
             }
