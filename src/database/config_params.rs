@@ -348,7 +348,7 @@ impl ConfigParamStore {
 
     /// Insert a param only if it doesn't already exist.
     /// Returns 1 if inserted, 0 if skipped.
-    async fn seed_if_absent(
+    pub async fn seed_if_absent(
         &self,
         category: &str,
         key: &str,
