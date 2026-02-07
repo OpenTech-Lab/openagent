@@ -690,7 +690,20 @@ main() {
                     info "Using existing agent '${AGENT_NAME}' at ${agent_dir}"
                     # Regenerate compose file to apply any updates
                     generate_compose_file
-                    # Ensure .env file is writable
+                    # Ensure config.json exists (upgrade from .env-based setup)
+                    if [ -d "${agent_dir}/config.json" ]; then
+                        rm -rf "${agent_dir}/config.json"
+                    fi
+                    if [ ! -f "${agent_dir}/config.json" ]; then
+                        if [ -f config.json ]; then
+                            cp config.json "${agent_dir}/config.json"
+                        elif [ -f config.json.example ]; then
+                            cp config.json.example "${agent_dir}/config.json"
+                            warn "Created config.json from config.json.example - please edit with your API keys"
+                        else
+                            echo '{}' > "${agent_dir}/config.json"
+                        fi
+                    fi
                     chmod 666 "${agent_dir}/config.json" 2>/dev/null || true
                 fi
                 ;;
