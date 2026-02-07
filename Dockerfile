@@ -40,7 +40,6 @@ RUN mkdir -p migrations
 COPY migrations/ ./migrations/
 
 COPY SOUL.md ./
-COPY .env.example ./
 
 # Build the actual binaries
 RUN cargo build --release
@@ -74,8 +73,6 @@ RUN ldconfig
 # Copy essential files
 COPY --from=builder /app/SOUL.md /app/SOUL.md
 COPY --from=builder /app/migrations /app/migrations
-COPY --from=builder /app/.env.example /app/.env.example
-
 # Create workspace directory and model cache directory
 RUN mkdir -p /app/workspace /app/.cache
 

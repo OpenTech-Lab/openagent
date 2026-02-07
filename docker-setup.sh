@@ -137,23 +137,23 @@ init_agent() {
     # Generate ports for this agent
     generate_ports "$AGENT_NAME"
     
-    # Create agent-specific .env if not exists
-    if [ ! -f "${agent_dir}/.env" ]; then
-        if [ -f .env ]; then
-            cp .env "${agent_dir}/.env"
-            success "Copied .env to agent directory"
-        elif [ -f .env.example ]; then
-            cp .env.example "${agent_dir}/.env"
-            success "Created .env from .env.example"
-            warn "Please edit ${agent_dir}/.env with your API keys"
+    # Create agent-specific config.json if not exists
+    if [ ! -f "${agent_dir}/config.json" ]; then
+        if [ -f config.json ]; then
+            cp config.json "${agent_dir}/config.json"
+            success "Copied config.json to agent directory"
+        elif [ -f config.json.example ]; then
+            cp config.json.example "${agent_dir}/config.json"
+            success "Created config.json from config.json.example"
+            warn "Please edit ${agent_dir}/config.json with your API keys"
         else
-            touch "${agent_dir}/.env"
-            warn "Created empty .env file"
+            echo '{}' > "${agent_dir}/config.json"
+            warn "Created empty config.json file"
         fi
     fi
 
-    # Ensure .env file is writable (important for Docker bind mounts)
-    chmod 666 "${agent_dir}/.env" 2>/dev/null || true
+    # Ensure config.json file is writable (important for Docker bind mounts)
+    chmod 666 "${agent_dir}/config.json" 2>/dev/null || true
     
     # Create agent-specific SOUL.md if not exists
     if [ ! -f "${agent_dir}/SOUL.md" ]; then
@@ -199,13 +199,14 @@ services:
     tty: true
     entrypoint: ["openagent-tui"]
     volumes:
-      - ./.env:/app/.env:ro
+      - ./config.json:/app/config.json:ro
       - ./SOUL.md:/app/SOUL.md:rw
       - ./workspace:/app/workspace:rw
       - openagent-${AGENT_NAME}-model-cache:/app/.cache
     environment:
       - RUST_LOG=\${RUST_LOG:-warn,openagent=info}
       - AGENT_NAME=${AGENT_NAME}
+      - OPENAGENT_CONFIG=/app/config.json
     networks:
       - openagent-${AGENT_NAME}-network
 
@@ -221,7 +222,7 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - ./.env:/app/.env:rw
+      - ./config.json:/app/config.json:rw
       - ./SOUL.md:/app/SOUL.md:rw
       - ./workspace:/app/workspace:rw
       - openagent-${AGENT_NAME}-model-cache:/app/.cache
@@ -229,6 +230,7 @@ services:
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
       - AGENT_NAME=${AGENT_NAME}
+      - OPENAGENT_CONFIG=/app/config.json
       - DATABASE_URL=postgres://openagent:openagent@openagent-${AGENT_NAME}-postgres:5432/openagent
     depends_on:
       ${AGENT_NAME}-postgres:
@@ -248,7 +250,7 @@ services:
     ports:
       - "${GATEWAY_PORT}:8080"
     volumes:
-      - ./.env:/app/.env:ro
+      - ./config.json:/app/config.json:ro
       - ./SOUL.md:/app/SOUL.md
       - ./workspace:/app/workspace
       - openagent-${AGENT_NAME}-model-cache:/app/.cache
@@ -256,6 +258,7 @@ services:
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
       - AGENT_NAME=${AGENT_NAME}
+      - OPENAGENT_CONFIG=/app/config.json
       - DATABASE_URL=postgres://openagent:openagent@openagent-${AGENT_NAME}-postgres:5432/openagent
     depends_on:
       ${AGENT_NAME}-postgres:
@@ -354,16 +357,16 @@ setup_env() {
     fi
     
     step "Setting up environment..."
-    if [ ! -f .env ]; then
-        if [ -f .env.example ]; then
-            cp .env.example .env
-            success "Created .env from .env.example"
-            warn "Please edit .env with your API keys before running onboard"
+    if [ ! -f config.json ]; then
+        if [ -f config.json.example ]; then
+            cp config.json.example config.json
+            success "Created config.json from config.json.example"
+            warn "Please edit config.json with your API keys before running onboard"
         else
-            warn ".env file not found and no .env.example available"
+            warn "config.json file not found and no config.json.example available"
         fi
     else
-        success ".env file exists"
+        success "config.json file exists"
     fi
 }
 
@@ -546,7 +549,7 @@ show_usage() {
     echo "  • PostgreSQL database (separate memory/records)"
     echo "  • Workspace directory (.agents/<name>/workspace)"
     echo "  • SOUL.md personality file (.agents/<name>/SOUL.md)"
-    echo "  • Environment config (.agents/<name>/.env)"
+    echo "  • Configuration file (.agents/<name>/config.json)"
 }
 
 # Parse arguments and determine agent name
@@ -688,7 +691,7 @@ main() {
                     # Regenerate compose file to apply any updates
                     generate_compose_file
                     # Ensure .env file is writable
-                    chmod 666 "${agent_dir}/.env" 2>/dev/null || true
+                    chmod 666 "${agent_dir}/config.json" 2>/dev/null || true
                 fi
                 ;;
         esac
@@ -699,7 +702,7 @@ main() {
             # Regenerate compose file to apply any updates
             if [ -n "$AGENT_NAME" ]; then
                 generate_compose_file
-                chmod 666 "$(get_agent_dir)/.env" 2>/dev/null || true
+                chmod 666 "$(get_agent_dir)/config.json" 2>/dev/null || true
             fi
             build_images
             ;;
