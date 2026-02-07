@@ -8,6 +8,7 @@ use openagent::agent::{
     ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
+    TaskCreateTool, TaskListTool, TaskUpdateTool,
     prompts::{DEFAULT_SYSTEM_PROMPT, Soul},
 };
 use openagent::config::Config;
@@ -53,6 +54,8 @@ enum Command {
     Approve(String),
     #[command(description = "List pending pairing requests (admin only)")]
     Pending,
+    #[command(description = "Create or list tasks (e.g., /task Buy groceries)")]
+    Task(String),
 }
 
 /// Session type for sandboxing decisions
@@ -295,6 +298,14 @@ impl AppState {
             info!("Memory tools registered for DM sessions");
         }
 
+        // Register task tools if task store is available (DM)
+        if let Some(ref ts) = task_store {
+            dm_tools.register(TaskCreateTool::new(ts.clone()));
+            dm_tools.register(TaskListTool::new(ts.clone()));
+            dm_tools.register(TaskUpdateTool::new(ts.clone()));
+            info!("Task tools registered for DM sessions");
+        }
+
         // Initialize group tools (sandboxed - restricted commands)
         let mut group_tools = ToolRegistry::new();
         group_tools.register(ReadFileTool::new(config.sandbox.allowed_dir.clone()));
@@ -321,6 +332,12 @@ impl AppState {
             group_tools.register(MemorySearchTool::new(retriever.clone()));
             group_tools.register(MemoryListTool::new(retriever.clone()));
             info!("Memory tools (read-only) registered for group sessions");
+        }
+
+        // Register read-only task tools for group sessions
+        if let Some(ref ts) = task_store {
+            group_tools.register(TaskListTool::new(ts.clone()));
+            info!("Task tools (read-only) registered for group sessions");
         }
 
         // Initialize pairing manager with admin users from config
@@ -840,6 +857,65 @@ async fn handle_command(
                     .await?;
             }
         }
+        "task" => {
+            if let Some(ref task_store) = state.task_store {
+                if args.is_empty() {
+                    // List recent tasks
+                    let user_id_str = user_id.to_string();
+                    match task_store.get_by_user(&user_id_str, None, 10).await {
+                        Ok(tasks) if tasks.is_empty() => {
+                            bot.send_message(chat_id, "No tasks found. Create one with:\n/task <description>")
+                                .await?;
+                        }
+                        Ok(tasks) => {
+                            let mut msg_text = format!("📋 Your tasks ({}):\n\n", tasks.len());
+                            for t in &tasks {
+                                let status_icon = match t.status.as_str() {
+                                    "pending" => "⏳",
+                                    "processing" => "⚙️",
+                                    "finish" => "✅",
+                                    "fail" => "❌",
+                                    "cancel" => "🚫",
+                                    "stop" => "⏹",
+                                    _ => "❓",
+                                };
+                                msg_text.push_str(&format!(
+                                    "{} {} [{}]\n   {}\n\n",
+                                    status_icon,
+                                    t.title,
+                                    t.status,
+                                    &t.id.to_string()[..8],
+                                ));
+                            }
+                            bot.send_message(chat_id, msg_text).await?;
+                        }
+                        Err(e) => {
+                            bot.send_message(chat_id, format!("Error listing tasks: {}", e))
+                                .await?;
+                        }
+                    }
+                } else {
+                    // Create a new task from the args
+                    let title = if args.len() > 100 { &args[..100] } else { &args };
+                    match task_store.create(&user_id.to_string(), Some(chat_id.0), title, &args, 0).await {
+                        Ok(task) => {
+                            bot.send_message(
+                                chat_id,
+                                format!("✅ Task created: {}\nID: {}", task.title, &task.id.to_string()[..8]),
+                            )
+                            .await?;
+                        }
+                        Err(e) => {
+                            bot.send_message(chat_id, format!("Failed to create task: {}", e))
+                                .await?;
+                        }
+                    }
+                }
+            } else {
+                bot.send_message(chat_id, "Task management requires a database connection.")
+                    .await?;
+            }
+        }
         _ => {
             bot.send_message(chat_id, "Unknown command. Use /help to see available commands.")
                 .await?;
@@ -860,28 +936,13 @@ async fn handle_chat(
 ) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
-    // Create task record for this chat message
-    let task_id = if let Some(ref task_store) = state.task_store {
-        let title = if text.len() > 100 { &text[..100] } else { text };
-        match task_store.create(user_id, Some(chat_id.0), title, text, 0).await {
-            Ok(task) => {
-                let tid = task.id;
-                let _ = task_store.start_processing(tid).await;
-                info!("Created task {} for user message", tid);
-                Some(tid)
-            }
-            Err(e) => {
-                warn!("Failed to create task: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Note: Tasks are NOT auto-created for every message.
+    // Tasks are created explicitly via /task command or task_create tool.
 
-    // Set agent status to processing
-    if let (Some(tid), Some(ref status_store)) = (task_id, &state.status_store) {
-        let _ = status_store.set_processing(tid).await;
+    // Set agent status to processing (without a task reference)
+    // Use a nil UUID as placeholder since set_processing requires a task_id
+    if let Some(ref status_store) = state.status_store {
+        let _ = status_store.set_processing(uuid::Uuid::nil()).await;
     }
 
     // Show typing indicator
@@ -965,9 +1026,6 @@ async fn handle_chat(
                 bot.send_message(chat_id, format!("❌ Error: {}", e))
                     .await?;
                 // Cleanup on early return
-                if let (Some(tid), Some(ref ts)) = (task_id, &state.task_store) {
-                    let _ = ts.fail(tid, &e.to_string()).await;
-                }
                 if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
                 return Ok(());
             }
@@ -980,9 +1038,6 @@ async fn handle_chat(
                 bot.send_message(chat_id, "❌ No response from LLM")
                     .await?;
                 // Cleanup on early return
-                if let (Some(tid), Some(ref ts)) = (task_id, &state.task_store) {
-                    let _ = ts.fail(tid, "No LLM response").await;
-                }
                 if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
                 return Ok(());
             }
@@ -1044,11 +1099,12 @@ async fn handle_chat(
                         // Show typing while executing tool
                         let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
 
-                        // Inject _user_id for memory tools
+                        // Inject _user_id for memory and task tools
                         let mut call_args = args;
-                        if tool_name.starts_with("memory_") {
+                        if tool_name.starts_with("memory_") || tool_name.starts_with("task_") {
                             if let Some(obj) = call_args.as_object_mut() {
                                 obj.insert("_user_id".to_string(), serde_json::json!(user_id));
+                                obj.insert("_chat_id".to_string(), serde_json::json!(chat_id.0));
                             }
                         }
 
@@ -1123,20 +1179,6 @@ async fn handle_chat(
     // Send response (split if too long)
     if !final_response.is_empty() {
         send_long_message(&bot, chat_id, &final_response).await?;
-    }
-
-    // Finalize task record
-    if let (Some(tid), Some(ref task_store)) = (task_id, &state.task_store) {
-        if final_response.is_empty() {
-            let _ = task_store.fail(tid, "Empty response").await;
-        } else {
-            let truncated = if final_response.len() > 2000 {
-                &final_response[..2000]
-            } else {
-                &final_response
-            };
-            let _ = task_store.finish(tid, Some(truncated)).await;
-        }
     }
 
     // Restore agent status to ready

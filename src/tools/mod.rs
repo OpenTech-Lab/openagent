@@ -29,6 +29,7 @@ mod duckduckgo_search;
 mod brave_search;
 mod perplexity_search;
 mod memory;
+mod task;
 
 // Core trait and types
 pub use traits::{Tool, ToolResult, ToolCall};
@@ -46,6 +47,9 @@ pub use perplexity_search::{PerplexitySearchTool, PerplexityConfig};
 
 // Memory tools
 pub use memory::{MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool};
+
+// Task tools
+pub use task::{TaskCreateTool, TaskListTool, TaskUpdateTool};
 
 // Shared types
 pub use duckduckgo_search::SearchResult;

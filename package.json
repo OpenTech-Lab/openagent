@@ -17,6 +17,7 @@
     "chat": "cargo run --release --bin openagent -- chat",
     "tui": "cargo run --release --bin openagent-tui --",
     "tui:memory": "cargo run --release --bin openagent-tui -- --memory",
+    "dashboard": "cargo run --release --bin openagent-dashboard --",
     "models": "cargo run --release --bin openagent -- models",
     "test": "cargo test",
     "test:watch": "cargo watch -x test",

@@ -41,7 +41,7 @@ impl std::fmt::Display for AgentState {
 }
 
 /// Agent status row (singleton, id=1)
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct AgentStatusRow {
     pub id: i32,
     pub status: String,
