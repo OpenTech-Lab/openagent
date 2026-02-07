@@ -243,4 +243,35 @@ impl TaskStore {
         .await?;
         Ok(row.0)
     }
+
+    /// List all tasks with optional status filter and pagination (no user_id filter)
+    pub async fn list_all(
+        &self,
+        status: Option<TaskStatus>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<AgentTask>> {
+        let tasks: Vec<AgentTask> = sqlx::query_as(r#"
+            SELECT * FROM agent_tasks
+            WHERE ($1::text IS NULL OR status = $1)
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+        "#)
+        .bind(status.map(|s| s.as_str().to_string()))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(tasks)
+    }
+
+    /// Count tasks grouped by status
+    pub async fn count_by_status(&self) -> Result<std::collections::HashMap<String, i64>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT status, COUNT(*) FROM agent_tasks GROUP BY status",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
 }

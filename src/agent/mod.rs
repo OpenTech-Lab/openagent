@@ -29,4 +29,5 @@ pub use crate::tools::{
     DuckDuckGoSearchTool, BraveSearchTool, BraveSearchConfig,
     PerplexitySearchTool, PerplexityConfig, SearchResult,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
+    TaskCreateTool, TaskListTool, TaskUpdateTool,
 };

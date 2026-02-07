@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenAgent Dashboard</title>
+<style>
+:root {
+  --sidebar-bg: #1a1a2e;
+  --sidebar-hover: #16213e;
+  --sidebar-active: #0f3460;
+  --accent: #4361ee;
+  --bg: #f5f6fa;
+  --card-bg: #fff;
+  --text: #2d3436;
+  --text-muted: #636e72;
+  --border: #dfe6e9;
+  --green: #00b894;
+  --amber: #fdcb6e;
+  --red: #d63031;
+  --orange: #e17055;
+  --gray: #b2bec3;
+  --blue: #0984e3;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 220px;
+  background: var(--sidebar-bg);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  z-index: 100;
+}
+
+.sidebar-header {
+  padding: 20px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.sidebar-header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.sidebar-header .version {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  margin-top: 2px;
+}
+
+.sidebar nav { flex: 1; padding: 8px 0; }
+
+.sidebar nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.sidebar nav a:hover { background: var(--sidebar-hover); color: #fff; }
+.sidebar nav a.active { background: var(--sidebar-active); color: #fff; font-weight: 600; }
+
+.sidebar nav a .icon {
+  width: 18px;
+  text-align: center;
+  font-size: 15px;
+}
+
+/* Main content */
+.main {
+  flex: 1;
+  margin-left: 220px;
+  padding: 24px 32px;
+  min-height: 100vh;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h2 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.page-header p {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+/* Cards */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Stats grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+
+.stat-card .stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.stat-card .stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-ready, .badge-finish { background: rgba(0,184,148,0.15); color: var(--green); }
+.badge-processing { background: rgba(253,203,110,0.25); color: #e67e22; }
+.badge-pending { background: rgba(9,132,227,0.15); color: var(--blue); }
+.badge-fail { background: rgba(214,48,49,0.15); color: var(--red); }
+.badge-cancel, .badge-stop { background: rgba(178,190,195,0.3); color: var(--text-muted); }
+.badge-mutable { background: rgba(67,97,238,0.15); color: var(--accent); }
+.badge-immutable { background: rgba(178,190,195,0.3); color: var(--text-muted); }
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--border);
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+table tr:hover { background: rgba(0,0,0,0.02); }
+
+.mono {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+/* Filters */
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filter-bar select,
+.filter-bar input {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--card-bg);
+  color: var(--text);
+}
+
+.filter-bar input { min-width: 200px; }
+
+.filter-bar select:focus,
+.filter-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(67,97,238,0.2);
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+.pagination button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.pagination button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+
+/* Importance bar */
+.importance-bar {
+  width: 60px;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.importance-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+
+/* Tags */
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: rgba(67,97,238,0.1);
+  color: var(--accent);
+  border-radius: 3px;
+  font-size: 11px;
+  margin: 1px 2px;
+}
+
+/* Section cards for soul */
+.soul-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.soul-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: rgba(0,0,0,0.02);
+  border-bottom: 1px solid var(--border);
+}
+
+.soul-card-header h4 { font-size: 14px; font-weight: 600; }
+
+.soul-card-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.soul-card-body {
+  padding: 16px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Config groups */
+.config-group {
+  margin-bottom: 16px;
+}
+
+.config-group-header {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 0;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+/* Detail expandable */
+.detail-row { display: none; }
+.detail-row.open { display: table-row; }
+
+.detail-row td {
+  padding: 12px 16px;
+  background: rgba(0,0,0,0.02);
+}
+
+.detail-content {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.detail-content pre {
+  background: #f1f2f6;
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.detail-content .label {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  margin-top: 8px;
+  margin-bottom: 2px;
+}
+
+/* Timestamp */
+.ts {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+}
+
+/* Status indicator */
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.status-dot.ready { background: var(--green); }
+.status-dot.processing { background: var(--amber); animation: pulse 1.5s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Memory card */
+.memory-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.memory-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.memory-card-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.memory-card-footer {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; }
+  .sidebar-header h1, .sidebar nav a span { display: none; }
+  .sidebar-header .version { display: none; }
+  .main { margin-left: 60px; padding: 16px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h1>OpenAgent</h1>
+    <div class="version" id="version">Dashboard</div>
+  </div>
+  <nav>
+    <a href="#/" data-page="overview" class="active">
+      <span class="icon">&#9673;</span><span>Overview</span>
+    </a>
+    <a href="#/tasks" data-page="tasks">
+      <span class="icon">&#9744;</span><span>Tasks</span>
+    </a>
+    <a href="#/soul" data-page="soul">
+      <span class="icon">&#9830;</span><span>Soul</span>
+    </a>
+    <a href="#/config" data-page="config">
+      <span class="icon">&#9881;</span><span>Config</span>
+    </a>
+    <a href="#/memories" data-page="memories">
+      <span class="icon">&#9733;</span><span>Memories</span>
+    </a>
+  </nav>
+</aside>
+
+<main class="main" id="content">
+  <div class="loading">Loading...</div>
+</main>
+
+<script>
+const api = {
+  async get(path) {
+    const res = await fetch('/api/v1' + path);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    return res.json();
+  }
+};
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  return d.toLocaleString();
+}
+
+function timeAgo(ts) {
+  if (!ts) return '-';
+  const now = Date.now();
+  const diff = now - new Date(ts).getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return secs + 's ago';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  return days + 'd ago';
+}
+
+function badge(status) {
+  return `<span class="badge badge-${status}">${status}</span>`;
+}
+
+function truncate(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.substring(0, len) + '...' : str;
+}
+
+function shortId(id) {
+  return id ? id.substring(0, 8) : '-';
+}
+
+function importanceBar(val) {
+  const pct = Math.round(val * 100);
+  const hue = val * 120; // 0=red, 60=yellow, 120=green
+  return `<span class="importance-bar"><span class="importance-bar-fill" style="width:${pct}%;background:hsl(${hue},70%,50%)"></span></span> ${pct}%`;
+}
+
+function tagsHtml(tags) {
+  if (!tags || !tags.length) return '';
+  return tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ---- Pages ----
+
+async function renderOverview() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const data = await api.get('/status');
+    const agent = data.agent;
+    const tasks = data.tasks;
+    const memories = data.memories;
+
+    let recentTasksHtml = '';
+    try {
+      const recent = await api.get('/tasks?limit=10');
+      recentTasksHtml = recent.map(t => `
+        <tr>
+          <td class="mono">${shortId(t.id)}</td>
+          <td>${escHtml(truncate(t.title, 60))}</td>
+          <td>${badge(t.status)}</td>
+          <td class="ts">${timeAgo(t.created_at)}</td>
+        </tr>
+      `).join('');
+    } catch(e) {
+      recentTasksHtml = `<tr><td colspan="4" class="ts">Could not load tasks</td></tr>`;
+    }
+
+    content.innerHTML = `
+      <div class="page-header">
+        <h2>Overview</h2>
+        <p>Agent status and activity summary</p>
+      </div>
+
+      <div class="card">
+        <h3>Agent Status</h3>
+        <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:center">
+          <div>
+            <span class="status-dot ${agent.status}"></span>
+            <strong style="font-size:18px;text-transform:capitalize">${agent.status}</strong>
+          </div>
+          <div class="ts">
+            ${agent.current_task_id ? 'Task: <span class="mono">' + shortId(agent.current_task_id) + '</span>' : ''}
+          </div>
+          <div class="ts">Heartbeat: ${timeAgo(agent.last_heartbeat)}</div>
+          <div class="ts">Scheduler: ${timeAgo(agent.last_scheduler_run)}</div>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--blue)">${tasks.pending || 0}</div>
+          <div class="stat-label">Pending</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:#e67e22">${tasks.processing || 0}</div>
+          <div class="stat-label">Processing</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--green)">${tasks.finish || 0}</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--red)">${tasks.fail || 0}</div>
+          <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${tasks.total || 0}</div>
+          <div class="stat-label">Total Tasks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--accent)">${memories.total || 0}</div>
+          <div class="stat-label">Memories</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Recent Tasks</h3>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Title</th><th>Status</th><th>Created</th></tr>
+          </thead>
+          <tbody>${recentTasksHtml || '<tr><td colspan="4" class="ts">No tasks yet</td></tr>'}</tbody>
+        </table>
+      </div>
+    `;
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p>Error loading status: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+// Tasks page state
+let tasksState = { status: '', limit: 50, offset: 0 };
+
+async function renderTasks() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    let url = `/tasks?limit=${tasksState.limit}&offset=${tasksState.offset}`;
+    if (tasksState.status) url += `&status=${tasksState.status}`;
+    const tasks = await api.get(url);
+
+    let statsHtml = '';
+    try {
+      const stats = await api.get('/tasks/stats');
+      statsHtml = `<span class="ts" style="margin-left:auto">
+        Total: ${Object.values(stats).reduce((a,b) => a+b, 0)}
+        ${Object.entries(stats).map(([k,v]) => `| ${k}: ${v}`).join(' ')}
+      </span>`;
+    } catch(e) {}
+
+    const rows = tasks.map((t, i) => `
+      <tr style="cursor:pointer" onclick="toggleDetail(${i})">
+        <td class="mono">${shortId(t.id)}</td>
+        <td>${escHtml(truncate(t.title, 80))}</td>
+        <td>${badge(t.status)}</td>
+        <td>${t.priority}</td>
+        <td class="mono ts">${escHtml(t.user_id).substring(0,12)}</td>
+        <td class="ts">${formatTime(t.created_at)}</td>
+      </tr>
+      <tr class="detail-row" id="detail-${i}">
+        <td colspan="6">
+          <div class="detail-content">
+            <div class="label">Description</div>
+            <div>${escHtml(t.description)}</div>
+            ${t.result ? `<div class="label">Result</div><pre>${escHtml(t.result)}</pre>` : ''}
+            ${t.error_message ? `<div class="label">Error</div><pre style="color:var(--red)">${escHtml(t.error_message)}</pre>` : ''}
+            <div style="display:flex;gap:16px;margin-top:8px" class="ts">
+              <span>ID: ${t.id}</span>
+              ${t.started_at ? `<span>Started: ${formatTime(t.started_at)}</span>` : ''}
+              ${t.completed_at ? `<span>Completed: ${formatTime(t.completed_at)}</span>` : ''}
+            </div>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    content.innerHTML = `
+      <div class="page-header">
+        <h2>Tasks</h2>
+        <p>Agent task history and status</p>
+      </div>
+
+      <div class="filter-bar">
+        <select id="taskStatusFilter" onchange="tasksState.status=this.value;tasksState.offset=0;renderTasks()">
+          <option value="">All statuses</option>
+          <option value="pending" ${tasksState.status==='pending'?'selected':''}>Pending</option>
+          <option value="processing" ${tasksState.status==='processing'?'selected':''}>Processing</option>
+          <option value="finish" ${tasksState.status==='finish'?'selected':''}>Finished</option>
+          <option value="fail" ${tasksState.status==='fail'?'selected':''}>Failed</option>
+          <option value="cancel" ${tasksState.status==='cancel'?'selected':''}>Cancelled</option>
+          <option value="stop" ${tasksState.status==='stop'?'selected':''}>Stopped</option>
+        </select>
+        ${statsHtml}
+      </div>
+
+      <div class="card" style="padding:0;overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Title</th><th>Status</th><th>Priority</th><th>User</th><th>Created</th></tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="6" class="ts">No tasks found</td></tr>'}</tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <button onclick="tasksState.offset=Math.max(0,tasksState.offset-tasksState.limit);renderTasks()" ${tasksState.offset===0?'disabled':''}>Prev</button>
+        <span class="ts">Showing ${tasksState.offset+1}-${tasksState.offset+tasks.length}</span>
+        <button onclick="tasksState.offset+=tasksState.limit;renderTasks()" ${tasks.length<tasksState.limit?'disabled':''}>Next</button>
+      </div>
+    `;
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p>Error loading tasks: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+function toggleDetail(idx) {
+  const row = document.getElementById('detail-' + idx);
+  if (row) row.classList.toggle('open');
+}
+
+async function renderSoul() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const sections = await api.get('/soul');
+
+    const cards = sections.map(s => `
+      <div class="soul-card">
+        <div class="soul-card-header">
+          <h4>${escHtml(s.section_name)}</h4>
+          <div class="soul-card-meta">
+            ${s.is_mutable ? badge('mutable') : badge('immutable')}
+            <span>v${s.version}</span>
+            <span>${timeAgo(s.updated_at)}</span>
+          </div>
+        </div>
+        <div class="soul-card-body">${escHtml(s.content)}</div>
+      </div>
+    `).join('');
+
+    content.innerHTML = `
+      <div class="page-header">
+        <h2>Soul</h2>
+        <p>Agent personality and identity sections</p>
+      </div>
+      ${cards || '<div class="card"><p class="ts">No soul sections found</p></div>'}
+    `;
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p>Error loading soul: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+let configCategory = '';
+
+async function renderConfig() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    let url = '/config';
+    if (configCategory) url += `?category=${encodeURIComponent(configCategory)}`;
+    const params = await api.get(url);
+
+    // Group by category
+    const groups = {};
+    params.forEach(p => {
+      if (!groups[p.category]) groups[p.category] = [];
+      groups[p.category].push(p);
+    });
+
+    const categories = Object.keys(groups).sort();
+
+    const categoryOptions = categories.map(c =>
+      `<option value="${escHtml(c)}" ${configCategory===c?'selected':''}>${escHtml(c)}</option>`
+    ).join('');
+
+    const groupsHtml = categories.map(cat => {
+      const rows = groups[cat].map(p => `
+        <tr>
+          <td class="mono">${escHtml(p.key)}</td>
+          <td class="mono">${p.is_secret ? '<span class="ts">********</span>' : escHtml(p.value)}</td>
+          <td>${escHtml(p.value_type)}</td>
+          <td class="ts">${escHtml(p.description || '')}</td>
+          <td class="ts">${timeAgo(p.updated_at)}</td>
+        </tr>
+      `).join('');
+
+      return `
+        <div class="config-group">
+          <div class="config-group-header">${escHtml(cat)}</div>
+          <table>
+            <thead><tr><th>Key</th><th>Value</th><th>Type</th><th>Description</th><th>Updated</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }).join('');
+
+    content.innerHTML = `
+      <div class="page-header">
+        <h2>Configuration</h2>
+        <p>Runtime configuration parameters</p>
+      </div>
+
+      <div class="filter-bar">
+        <select onchange="configCategory=this.value;renderConfig()">
+          <option value="">All categories</option>
+          ${categoryOptions}
+        </select>
+        <span class="ts">${params.length} parameters</span>
+      </div>
+
+      ${groupsHtml || '<div class="card"><p class="ts">No config parameters found</p></div>'}
+    `;
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p>Error loading config: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+let memoriesState = { search: '', type: '', tag: '', limit: 30, offset: 0 };
+
+async function renderMemories() {
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
+  try {
+    const params = new URLSearchParams();
+    params.set('limit', memoriesState.limit);
+    params.set('offset', memoriesState.offset);
+    if (memoriesState.search) params.set('search', memoriesState.search);
+    if (memoriesState.type) params.set('type', memoriesState.type);
+    if (memoriesState.tag) params.set('tag', memoriesState.tag);
+
+    const memories = await api.get('/memories?' + params.toString());
+
+    let statsHtml = '';
+    try {
+      const stats = await api.get('/memories/stats');
+      statsHtml = `<span class="ts">Total: ${stats.total} | ${Object.entries(stats.by_type).map(([k,v]) => `${k}: ${v}`).join(' | ')}</span>`;
+    } catch(e) {}
+
+    const cards = memories.map(m => `
+      <div class="memory-card">
+        <div class="memory-card-header">
+          <div>
+            <span class="badge badge-${m.memory_type === 'episodic' ? 'processing' : m.memory_type === 'procedural' ? 'pending' : 'mutable'}">${m.memory_type}</span>
+            ${m.summary ? `<span class="ts" style="margin-left:8px">${escHtml(m.summary)}</span>` : ''}
+          </div>
+          <div>${importanceBar(m.importance)}</div>
+        </div>
+        <div class="memory-card-body">${escHtml(m.content)}</div>
+        <div class="memory-card-footer">
+          ${tagsHtml(m.tags)}
+          <span>source: ${escHtml(m.source)}</span>
+          <span>user: ${escHtml(m.user_id)}</span>
+          <span>accessed: ${m.access_count}x</span>
+          <span>${timeAgo(m.created_at)}</span>
+        </div>
+      </div>
+    `).join('');
+
+    content.innerHTML = `
+      <div class="page-header">
+        <h2>Memories</h2>
+        <p>Agent long-term memory storage</p>
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" placeholder="Search memories..." value="${escHtml(memoriesState.search)}"
+          onkeydown="if(event.key==='Enter'){memoriesState.search=this.value;memoriesState.offset=0;renderMemories()}" />
+        <select onchange="memoriesState.type=this.value;memoriesState.offset=0;renderMemories()">
+          <option value="">All types</option>
+          <option value="semantic" ${memoriesState.type==='semantic'?'selected':''}>Semantic</option>
+          <option value="episodic" ${memoriesState.type==='episodic'?'selected':''}>Episodic</option>
+          <option value="procedural" ${memoriesState.type==='procedural'?'selected':''}>Procedural</option>
+        </select>
+        <input type="text" placeholder="Filter by tag..." value="${escHtml(memoriesState.tag)}" style="min-width:120px"
+          onkeydown="if(event.key==='Enter'){memoriesState.tag=this.value;memoriesState.offset=0;renderMemories()}" />
+        ${statsHtml}
+      </div>
+
+      ${cards || '<div class="card"><p class="ts">No memories found</p></div>'}
+
+      <div class="pagination">
+        <button onclick="memoriesState.offset=Math.max(0,memoriesState.offset-memoriesState.limit);renderMemories()" ${memoriesState.offset===0?'disabled':''}>Prev</button>
+        <span class="ts">Showing ${memoriesState.offset+1}-${memoriesState.offset+memories.length}</span>
+        <button onclick="memoriesState.offset+=memoriesState.limit;renderMemories()" ${memories.length<memoriesState.limit?'disabled':''}>Next</button>
+      </div>
+    `;
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p>Error loading memories: ${escHtml(e.message)}</p></div>`;
+  }
+}
+
+// ---- Router ----
+
+const routes = {
+  '': renderOverview,
+  '/': renderOverview,
+  '/overview': renderOverview,
+  '/tasks': renderTasks,
+  '/soul': renderSoul,
+  '/config': renderConfig,
+  '/memories': renderMemories,
+};
+
+let refreshInterval = null;
+
+function navigate() {
+  const hash = window.location.hash.replace('#', '') || '/';
+  const render = routes[hash] || renderOverview;
+
+  // Update active nav
+  document.querySelectorAll('.sidebar nav a').forEach(a => {
+    const page = a.getAttribute('data-page');
+    const isActive = (hash === '/' && page === 'overview') ||
+                     (hash === '' && page === 'overview') ||
+                     hash === '/' + page;
+    a.classList.toggle('active', isActive);
+  });
+
+  // Clear auto-refresh
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+  }
+
+  render();
+
+  // Auto-refresh overview
+  if (render === renderOverview) {
+    refreshInterval = setInterval(renderOverview, 10000);
+  }
+}
+
+window.addEventListener('hashchange', navigate);
+window.addEventListener('load', navigate);
+</script>
+</body>
+</html>
