@@ -662,12 +662,53 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     println!("configuring OpenAgent step by step.");
     println!();
 
-    let env_path = Path::new(".env");
-    let mut env_vars: HashMap<String, String> = if env_path.exists() {
-        read_env_file(env_path)?
+    // Load existing values from config.json (or .env for backward compat)
+    let mut env_vars: HashMap<String, String> = HashMap::new();
+    let config_path = openagent::config::config_path();
+    if config_path.exists() {
+        // Pre-populate env_vars from existing config.json
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(val) = json5::from_str::<serde_json::Value>(&content) {
+                if let Some(key) = val.pointer("/provider/openrouter/api_key").and_then(|v| v.as_str()) {
+                    env_vars.insert("OPENROUTER_API_KEY".to_string(), key.to_string());
+                }
+                if let Some(model) = val.pointer("/provider/openrouter/default_model").and_then(|v| v.as_str()) {
+                    env_vars.insert("DEFAULT_MODEL".to_string(), model.to_string());
+                }
+                if let Some(token) = val.pointer("/channels/telegram/bot_token").and_then(|v| v.as_str()) {
+                    env_vars.insert("TELEGRAM_BOT_TOKEN".to_string(), token.to_string());
+                }
+                if let Some(users) = val.pointer("/channels/telegram/allow_from").and_then(|v| v.as_array()) {
+                    let ids: Vec<String> = users.iter().filter_map(|v| v.as_i64().map(|n| n.to_string())).collect();
+                    if !ids.is_empty() {
+                        env_vars.insert("ALLOWED_USERS".to_string(), ids.join(","));
+                    }
+                }
+                if let Some(url) = val.pointer("/storage/postgres/url").and_then(|v| v.as_str()) {
+                    env_vars.insert("DATABASE_URL".to_string(), url.to_string());
+                }
+                if let Some(env) = val.pointer("/sandbox/execution_env").and_then(|v| v.as_str()) {
+                    env_vars.insert("EXECUTION_ENV".to_string(), env.to_string());
+                }
+                if let Some(dir) = val.pointer("/sandbox/allowed_dir").and_then(|v| v.as_str()) {
+                    env_vars.insert("ALLOWED_DIR".to_string(), dir.to_string());
+                }
+                if let Some(port) = val.pointer("/gateway/port").and_then(|v| v.as_u64()) {
+                    env_vars.insert("WEBHOOK_PORT".to_string(), port.to_string());
+                }
+            }
+        }
     } else {
-        HashMap::new()
-    };
+        // Backward compat: try loading from .env
+        let env_path = Path::new(".env");
+        if env_path.exists() {
+            env_vars = read_env_file(env_path)?;
+        }
+    }
+    // Also pick up env vars set by Docker (e.g., DATABASE_URL)
+    if let Ok(db_url) = std::env::var("DATABASE_URL") {
+        env_vars.entry("DATABASE_URL".to_string()).or_insert(db_url);
+    }
 
     let total_steps = 5;
 
@@ -738,7 +779,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     };
 
     if openrouter_key.is_empty() {
-        println!("   ⚠️  No API key provided. You'll need to add it to .env manually.");
+        println!("   ⚠️  No API key provided. You'll need to add it to config.json manually.");
     } else {
         env_vars.insert("OPENROUTER_API_KEY".to_string(), openrouter_key.clone());
         println!("   ✅ API key configured");
@@ -854,7 +895,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     };
 
     if telegram_token.is_empty() {
-        println!("   ⚠️  No token provided. You'll need to add it to .env manually.");
+        println!("   ⚠️  No token provided. You'll need to add it to config.json manually.");
     } else {
         env_vars.insert("TELEGRAM_BOT_TOKEN".to_string(), telegram_token.clone());
         println!("   ✅ Bot token configured");
@@ -994,17 +1035,39 @@ async fn onboard(install_daemon: bool) -> Result<()> {
         if prompt_yes_no("   Run database migrations now?", true)? {
             print!("   Running migrations... ");
             io::stdout().flush()?;
-            // Save config first so migrations can read it (skip if running in Docker with pre-configured DB)
-            let databases_preconfigured = env_database_url.is_some();
-            if !databases_preconfigured {
-                write_env_file(env_path, &env_vars)?;
-                dotenvy::from_path(env_path).ok();
+            // Ensure DATABASE_URL env var is set so migrations can connect
+            if let Some(db_url) = env_vars.get("DATABASE_URL") {
+                std::env::set_var("DATABASE_URL", db_url);
             }
 
             match run_migrations_internal().await {
                 Ok(_) => println!("✅"),
                 Err(e) => println!("❌ {}", e),
             }
+        }
+
+        // Seed config_params table from current config
+        print!("   Seeding config to database... ");
+        io::stdout().flush()?;
+        match Config::from_env() {
+            Ok(config) => {
+                if let Some(ref pg_config) = config.storage.postgres {
+                    match init_pool(pg_config).await {
+                        Ok(pool) => {
+                            let store = ConfigParamStore::new(pool.clone());
+                            match store.init_from_config(&config).await {
+                                Ok(n) => println!("✅ ({} params seeded)", n),
+                                Err(e) => println!("❌ {}", e),
+                            }
+                            pool.close().await;
+                        }
+                        Err(e) => println!("❌ DB connect error: {}", e),
+                    }
+                } else {
+                    println!("⏭️  Skipped (no postgres config)");
+                }
+            }
+            Err(e) => println!("❌ Config load error: {}", e),
         }
     }
 
@@ -1055,47 +1118,74 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // =========================================================================
     print_section("Saving Configuration");
 
-    // Always try to save the .env file (needed for Telegram token, etc.)
+    // Save to config.json
+    let config_path = openagent::config::config_path();
     let databases_preconfigured = env_database_url.is_some();
     let mut save_succeeded = false;
-    match write_env_file(env_path, &env_vars) {
-        Ok(_) => {
-            // Verify the write actually persisted by re-reading the file
-            match read_env_file(env_path) {
-                Ok(saved_vars) => {
-                    // Check critical values were saved
-                    let telegram_saved = saved_vars.get("TELEGRAM_BOT_TOKEN") == env_vars.get("TELEGRAM_BOT_TOKEN");
-                    let openrouter_saved = saved_vars.get("OPENROUTER_API_KEY") == env_vars.get("OPENROUTER_API_KEY");
 
-                    if telegram_saved && openrouter_saved {
-                        println!("   ✅ Configuration saved to .env");
-                        save_succeeded = true;
-                    } else {
-                        println!("   ⚠️  Configuration may not have been saved correctly");
-                        if !telegram_saved && !telegram_token.is_empty() {
-                            println!("   ⚠️  Telegram token was not persisted");
-                        }
-                        if !openrouter_saved && !openrouter_key.is_empty() {
-                            println!("   ⚠️  OpenRouter API key was not persisted");
-                        }
-                        if databases_preconfigured {
-                            println!("   ℹ️  Edit .env on the host machine to add your API keys");
-                        }
-                    }
-                }
-                Err(_) => {
-                    println!("   ⚠️  Could not verify saved configuration");
-                    save_succeeded = true; // Assume it worked
-                }
-            }
+    // Read existing config.json or start from the example template
+    let mut config_value: serde_json::Value = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+        json5::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        let example = include_str!("../../config.json.example");
+        json5::from_str(example).unwrap_or_else(|_| serde_json::json!({}))
+    };
+
+    // Update config.json fields from collected env_vars
+    if let Some(key) = env_vars.get("OPENROUTER_API_KEY") {
+        config_value["provider"]["openrouter"]["api_key"] = serde_json::json!(key);
+    }
+    if let Some(model) = env_vars.get("DEFAULT_MODEL") {
+        config_value["provider"]["openrouter"]["default_model"] = serde_json::json!(model);
+        config_value["agent"]["model"] = serde_json::json!(model);
+    }
+    if let Some(token) = env_vars.get("TELEGRAM_BOT_TOKEN") {
+        config_value["channels"]["telegram"]["bot_token"] = serde_json::json!(token);
+    }
+    if let Some(polling) = env_vars.get("USE_LONG_POLLING") {
+        config_value["channels"]["telegram"]["use_long_polling"] = serde_json::json!(polling == "true");
+    }
+    if let Some(users) = env_vars.get("ALLOWED_USERS") {
+        let user_ids: Vec<i64> = users.split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        config_value["channels"]["telegram"]["allow_from"] = serde_json::json!(user_ids);
+    }
+    if let Some(db_url) = env_vars.get("DATABASE_URL") {
+        config_value["storage"]["postgres"]["url"] = serde_json::json!(db_url);
+    }
+    if let Some(env) = env_vars.get("EXECUTION_ENV") {
+        config_value["sandbox"]["execution_env"] = serde_json::json!(env);
+    }
+    if let Some(dir) = env_vars.get("ALLOWED_DIR") {
+        config_value["sandbox"]["allowed_dir"] = serde_json::json!(dir);
+    }
+    if let Some(image) = env_vars.get("CONTAINER_IMAGE") {
+        config_value["sandbox"]["container"]["image"] = serde_json::json!(image);
+    }
+    if let Some(port) = env_vars.get("WEBHOOK_PORT") {
+        if let Ok(p) = port.parse::<u16>() {
+            config_value["gateway"]["port"] = serde_json::json!(p);
+        }
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    match std::fs::write(&config_path, serde_json::to_string_pretty(&config_value).unwrap_or_default()) {
+        Ok(_) => {
+            println!("   ✅ Configuration saved to {}", config_path.display());
+            save_succeeded = true;
         }
         Err(e) => {
             if databases_preconfigured {
-                // In Docker with read-only .env, this is expected
-                println!("   ℹ️  Could not save .env (read-only): {}", e);
-                println!("   ⚠️  Edit .env on the host to configure Telegram token");
+                println!("   ℹ️  Could not save config.json (read-only): {}", e);
+                println!("   ⚠️  Edit config.json on the host to configure your settings");
             } else {
-                return Err(e);
+                return Err(Error::Config(format!("Failed to write config: {}", e)));
             }
         }
     }
@@ -1103,14 +1193,14 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // If save didn't succeed in Docker, show the values to copy manually
     if !save_succeeded && databases_preconfigured {
         println!();
-        println!("   To configure manually, add these to your .env file on the host:");
+        println!("   To configure manually, edit config.json on the host:");
         if !telegram_token.is_empty() {
-            println!("   TELEGRAM_BOT_TOKEN={}", telegram_token);
+            println!("   channels.telegram.bot_token = \"{}...\"", &telegram_token[..8.min(telegram_token.len())]);
         }
         if !openrouter_key.is_empty() {
             let masked = format!("{}...{}", &openrouter_key[..8.min(openrouter_key.len())],
                                 &openrouter_key[openrouter_key.len().saturating_sub(4)..]);
-            println!("   OPENROUTER_API_KEY={} (masked)", masked);
+            println!("   provider.openrouter.api_key = \"{}\" (masked)", masked);
         }
         println!();
     }
@@ -1120,12 +1210,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     // =========================================================================
     print_section("Verifying Configuration");
 
-    // Always reload env vars for verification to pick up newly saved values
-    // Use override mode to ensure new values take precedence over existing env vars
-    dotenvy::from_path_override(env_path).ok();
-
-    // Also explicitly set env vars from our collected values to ensure verification works
-    // This handles cases where the .env file write didn't persist (e.g., Docker bind mount issues)
+    // Set env vars from collected values so Config::from_env() picks them up for verification
     if !telegram_token.is_empty() {
         std::env::set_var("TELEGRAM_BOT_TOKEN", &telegram_token);
     }
@@ -1212,7 +1297,7 @@ async fn onboard(install_daemon: bool) -> Result<()> {
     println!();
 
     if openrouter_key.is_empty() || telegram_token.is_empty() {
-        println!("⚠️  Remember to edit .env and add missing API keys!");
+        println!("⚠️  Remember to edit config.json and add missing API keys!");
         println!();
     }
 

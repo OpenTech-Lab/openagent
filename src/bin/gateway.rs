@@ -235,6 +235,13 @@ impl AppState {
                     Some("Enable periodic pending task processing"),
                 ).await;
 
+                // Seed all config params from config file/env into database
+                match config_param_store.init_from_config(&config).await {
+                    Ok(n) if n > 0 => info!("Seeded {} config params into database", n),
+                    Ok(_) => {}
+                    Err(e) => warn!("Failed to seed config params: {}", e),
+                }
+
                 (Some(soul_store), Some(task_store), Some(status_store), Some(config_param_store))
             }
             None => (None, None, None, None),
