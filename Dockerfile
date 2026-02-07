@@ -40,6 +40,7 @@ RUN mkdir -p migrations
 COPY migrations/ ./migrations/
 
 COPY SOUL.md ./
+COPY config.json.example ./
 
 # Build the actual binaries
 RUN cargo build --release
