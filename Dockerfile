@@ -22,6 +22,7 @@ RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/cli.rs && \
     echo "fn main() {}" > src/bin/gateway.rs && \
     echo "fn main() {}" > src/bin/tui.rs && \
+    echo "fn main() {}" > src/bin/dashboard.rs && \
     echo "pub fn dummy() {}" > src/lib.rs
 
 # Build dependencies only (this layer will be cached)
@@ -66,6 +67,7 @@ WORKDIR /app
 COPY --from=builder /app/target/release/openagent /usr/local/bin/openagent
 COPY --from=builder /app/target/release/openagent-gateway /usr/local/bin/openagent-gateway
 COPY --from=builder /app/target/release/openagent-tui /usr/local/bin/openagent-tui
+COPY --from=builder /app/target/release/openagent-dashboard /usr/local/bin/openagent-dashboard
 
 # Copy ONNX Runtime library for fastembed
 COPY --from=builder /app/onnxruntime/ /usr/lib/
