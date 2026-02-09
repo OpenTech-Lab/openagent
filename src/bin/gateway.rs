@@ -982,6 +982,19 @@ async fn handle_chat(
     info!("Starting agent loop ({}) with {} tools available", session_label, tool_definitions.len());
     debug!("User message: {:?}", text);
 
+    // Inject tool availability context so the model knows which tools are loaded
+    if !tool_definitions.is_empty() {
+        let tool_names: Vec<&str> = tool_definitions.iter()
+            .map(|t| t.function.name.as_str())
+            .collect();
+        let tools_note = format!(
+            "[System: You have {} tools available for this session: {}. Use them when the user asks you to perform actions.]",
+            tool_names.len(),
+            tool_names.join(", ")
+        );
+        messages.push(AgentMessage::system(&tools_note));
+    }
+
     // Maximum iterations to prevent infinite loops
     const MAX_ITERATIONS: u32 = 50;
     let mut iteration = 0;
