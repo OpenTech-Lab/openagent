@@ -115,13 +115,15 @@ generate_ports() {
     # Generate a hash-based offset (0-999) from the agent name
     local hash=$(echo -n "$name" | md5sum | cut -c1-4)
     local offset=$((16#$hash % 1000))
-    
+
     POSTGRES_PORT=$((5432 + offset))
     GATEWAY_PORT=$((8080 + offset))
+    DASHBOARD_PORT=$((3000 + offset))
 
     # Check if ports are in valid range and adjust if needed
     if [ $POSTGRES_PORT -gt 65000 ]; then POSTGRES_PORT=$((5432 + (offset % 100))); fi
     if [ $GATEWAY_PORT -gt 65000 ]; then GATEWAY_PORT=$((8080 + (offset % 100))); fi
+    if [ $DASHBOARD_PORT -gt 65000 ]; then DASHBOARD_PORT=$((3000 + (offset % 100))); fi
 }
 
 # Initialize agent directory and config
@@ -169,7 +171,7 @@ init_agent() {
     generate_compose_file
     
     success "Agent '${AGENT_NAME}' initialized at ${agent_dir}"
-    info "Ports: PostgreSQL=${POSTGRES_PORT}, Gateway=${GATEWAY_PORT}"
+    info "Ports: PostgreSQL=${POSTGRES_PORT}, Gateway=${GATEWAY_PORT}, Dashboard=${DASHBOARD_PORT}"
 }
 
 # Generate docker-compose.yml for the agent
@@ -255,6 +257,32 @@ services:
       - ./workspace:/app/workspace
       - openagent-${AGENT_NAME}-model-cache:/app/.cache
       - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
+      - AGENT_NAME=${AGENT_NAME}
+      - OPENAGENT_CONFIG=/app/config.json
+      - DATABASE_URL=postgres://openagent:openagent@openagent-${AGENT_NAME}-postgres:5432/openagent
+    depends_on:
+      ${AGENT_NAME}-postgres:
+        condition: service_healthy
+    networks:
+      - openagent-${AGENT_NAME}-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # OpenAgent Dashboard - Web UI for monitoring
+  # ============================================================================
+  ${AGENT_NAME}-dashboard:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: openagent-${AGENT_NAME}-dashboard
+    entrypoint: ["openagent-dashboard", "--bind", "0.0.0.0", "--port", "3000"]
+    ports:
+      - "${DASHBOARD_PORT}:3000"
+    volumes:
+      - ./config.json:/app/config.json:ro
     environment:
       - RUST_LOG=\${RUST_LOG:-info,openagent=debug}
       - AGENT_NAME=${AGENT_NAME}
@@ -437,6 +465,20 @@ start_gateway() {
     fi
 }
 
+# Start dashboard service
+start_dashboard() {
+    step "Starting OpenAgent dashboard..."
+
+    if [ -n "$AGENT_NAME" ]; then
+        compose up -d ${AGENT_NAME}-dashboard
+        generate_ports "$AGENT_NAME"
+        success "Dashboard for '${AGENT_NAME}' is running on http://localhost:${DASHBOARD_PORT}"
+    else
+        $COMPOSE_CMD up -d openagent-dashboard
+        success "Dashboard is running on http://localhost:${DASHBOARD_PORT:-3000}"
+    fi
+}
+
 # Stop all services
 stop_services() {
     step "Stopping services..."
@@ -499,7 +541,8 @@ list_agents() {
                 # Get ports
                 if [ -f "${agent_dir}/docker-compose.yml" ]; then
                     local gw_port=$(grep -oP "^\s+- \"\K\d+(?=:8080\")" "${agent_dir}/docker-compose.yml" 2>/dev/null | head -1)
-                    echo -e "   • ${CYAN}${name}${NC} [${status}] - Gateway: ${gw_port:-N/A}"
+                    local dash_port=$(grep -oP "^\s+- \"\K\d+(?=:3000\")" "${agent_dir}/docker-compose.yml" 2>/dev/null | head -1)
+                    echo -e "   • ${CYAN}${name}${NC} [${status}] - Gateway: ${gw_port:-N/A}, Dashboard: ${dash_port:-N/A}"
                 else
                     echo -e "   • ${CYAN}${name}${NC} [${status}]"
                 fi
@@ -550,6 +593,7 @@ show_usage() {
     echo "  • Workspace directory (.agents/<name>/workspace)"
     echo "  • SOUL.md personality file (.agents/<name>/SOUL.md)"
     echo "  • Configuration file (.agents/<name>/config.json)"
+    echo "  • Web dashboard (monitoring UI)"
 }
 
 # Parse arguments and determine agent name
@@ -723,6 +767,7 @@ main() {
             setup_env
             start_databases
             start_gateway
+            start_dashboard
             show_status
             ;;
         stop)
@@ -760,7 +805,8 @@ main() {
             echo ""
             if [ -n "$AGENT_NAME" ]; then
                 info "Agent '${AGENT_NAME}' is ready!"
-                echo "   • Start gateway:      ./docker-setup.sh ${AGENT_NAME} --start"
+                echo "   • Start services:     ./docker-setup.sh ${AGENT_NAME} --start"
+                echo "     (starts gateway + dashboard + database)"
                 echo "   • Run TUI chat:       ./docker-setup.sh ${AGENT_NAME} --tui"
                 echo "   • Run CLI chat:       ./docker-setup.sh ${AGENT_NAME} --cli chat"
                 echo "   • Check status:       ./docker-setup.sh ${AGENT_NAME} --status"
@@ -768,7 +814,8 @@ main() {
                 echo "   • List all agents:    ./docker-setup.sh --list"
             else
                 info "Next steps:"
-                echo "   • Start the gateway:  ./docker-setup.sh --start"
+                echo "   • Start services:     ./docker-setup.sh --start"
+                echo "     (starts gateway + dashboard + database)"
                 echo "   • Run TUI chat:       ./docker-setup.sh --tui"
                 echo "   • Run CLI chat:       ./docker-setup.sh --cli chat"
                 echo "   • Check status:       ./docker-setup.sh --status"
