@@ -10,12 +10,17 @@
 //! MCP integration is in `crate::mcp`.
 //! Skills (composable workflows) are in `crate::skills`.
 
+pub mod agentic_loop;
 mod client;
 mod conversation;
 pub mod loop_guard;
 pub mod prompts;
 pub(crate) mod types;
 
+pub use agentic_loop::{
+    run_agentic_loop, AgentLoopInput, AgentLoopOutput, LoopCallback, LoopConfig, LoopOutcome,
+    LoopTrace, NoOpCallback,
+};
 pub use client::OpenRouterClient;
 pub use conversation::{Conversation, ConversationManager};
 pub use loop_guard::LoopGuard;

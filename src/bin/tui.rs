@@ -5,11 +5,12 @@
 //! Optionally connects to PostgreSQL for persistent memory.
 
 use openagent::agent::{
-    Conversation, GenerationOptions, LoopGuard, Message as AgentMessage, Role,
-    OpenRouterClient, ToolCall, ToolRegistry, ReadFileTool, WriteFileTool,
+    Conversation, LoopConfig, Role,
+    OpenRouterClient, ToolRegistry, ReadFileTool, WriteFileTool,
     SystemCommandTool, DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
     prompts::Soul,
+    agentic_loop::{self, AgentLoopInput, LoopCallback, ToolObservation},
 };
 use openagent::config::Config;
 use openagent::database::{init_pool, Memory, MemoryType};
@@ -265,53 +266,57 @@ fn print_history(state: &TuiState) {
     println!();
 }
 
-/// Format tool call for display
-fn format_tool_call(call: &ToolCall, verbose: bool) -> String {
-    let emoji = match call.name.as_str() {
-        "read_file" => "📖",
-        "write_file" => "✏️",
-        "system_command" => "⚡",
-        "duckduckgo_search" | "brave_search" | "perplexity_search" => "🔍",
-        _ => "🔧",
-    };
-    
-    if verbose {
-        let args_str = serde_json::to_string_pretty(&call.arguments)
-            .unwrap_or_else(|_| call.arguments.to_string());
-        format!("{} {} {}\n{}", emoji, style(&call.name).yellow().bold(), style(&call.id).dim(), style(args_str).dim())
-    } else {
-        // Extract key info based on tool type
-        let info = match call.name.as_str() {
-            "read_file" => call.arguments.get("path")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            "write_file" => call.arguments.get("path")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-            "system_command" => call.arguments.get("command")
-                .and_then(|v| v.as_str())
-                .map(|s| if s.len() > 50 { format!("{}...", &s[..50]) } else { s.to_string() })
-                .unwrap_or_default(),
-            "duckduckgo_search" | "brave_search" | "perplexity_search" => 
-                call.arguments.get("query")
-                    .and_then(|v| v.as_str())
-                    .map(|s| format!("\"{}\"", s))
-                    .unwrap_or_default(),
-            _ => "".to_string(),
-        };
-        
-        format!("{} {} {}", emoji, style(&call.name).yellow().bold(), style(info).dim())
-    }
-}
-
 /// Format tool result for display
 fn format_tool_result(result: &str, max_len: usize) -> String {
     if result.len() > max_len {
         format!("{}... ({} chars)", &result[..max_len], result.len())
     } else {
         result.to_string()
+    }
+}
+
+/// Callback for the TUI agentic loop: prints thinking indicator and tool results.
+struct TuiCallback;
+
+#[async_trait::async_trait]
+impl LoopCallback for TuiCallback {
+    async fn on_iteration_start(&self, _iteration: u32) {
+        print!("   {} ", style("●●●").dim());
+        let _ = io::stdout().flush();
+    }
+
+    async fn on_tool_executed(&self, tool_name: &str, observation: &ToolObservation) {
+        // Clear thinking indicator on first tool result
+        let term = Term::stdout();
+        let _ = term.clear_line();
+        print!("\r");
+
+        // Build a pseudo ToolCall for display
+        let emoji = match tool_name {
+            "read_file" => "📖",
+            "write_file" => "✏️",
+            "system_command" => "⚡",
+            "duckduckgo_search" | "brave_search" | "perplexity_search" => "🔍",
+            _ => "🔧",
+        };
+        println!("   {} {}", emoji, style(tool_name).yellow().bold());
+
+        if observation.success {
+            println!("   {} {}", style("✓").green(), format_tool_result(&observation.content, 200));
+        } else {
+            println!("   {} {}", style("✗").red(), format_tool_result(&observation.content, 200));
+        }
+
+        if observation.loop_guard_triggered {
+            println!("   {} {}", style("⚠").yellow(), style("Repetition detected, forcing reconsideration").dim());
+        }
+    }
+
+    async fn on_iteration_end(&self, _step: &agentic_loop::LoopStep) {
+        // Clear thinking indicator if no tools were called this iteration
+        let term = Term::stdout();
+        let _ = term.clear_line();
+        print!("\r");
     }
 }
 
@@ -341,149 +346,28 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
     } else {
         vec![]
     };
-    
-    const MAX_ITERATIONS: u32 = 20;
-    const MAX_TOOL_CALLS: u32 = 20;
-    let mut iteration = 0;
-    let mut tool_calls_made = 0u32;
-    let mut final_response = String::new();
-    let mut loop_guard = LoopGuard::default();
-    
-    loop {
-        iteration += 1;
-        
-        if iteration > MAX_ITERATIONS {
-            warn!("Agent loop exceeded max iterations");
-            if final_response.is_empty() {
-                final_response = "I reached the maximum number of iterations. Please try a more specific request.".to_string();
-            }
-            break;
-        }
-        
-        let use_tools = state.tools_enabled && tool_calls_made < MAX_TOOL_CALLS;
-        
-        // Show thinking indicator
-        print!("   {} ", style("●●●").dim());
-        io::stdout().flush()?;
-        
-        let response = if use_tools && !tool_definitions.is_empty() {
-            state.llm_client
-                .chat_with_tools(messages.clone(), tool_definitions.clone(), GenerationOptions::balanced())
-                .await
-        } else {
-            state.llm_client
-                .chat(messages.clone(), GenerationOptions::balanced())
-                .await
-        };
-        
-        // Clear thinking indicator
-        let term = Term::stdout();
-        let _ = term.clear_line();
-        print!("\r");
-        
-        let response = match response {
-            Ok(resp) => resp,
-            Err(e) => {
-                return Err(Error::Provider(format!("LLM error: {}", e)));
-            }
-        };
-        
-        let choice = match response.choices.first() {
-            Some(c) => c,
-            None => {
-                return Err(Error::Provider("No response from LLM".to_string()));
-            }
-        };
-        
-        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
-        
-        // Check finish reason
-        if finish_reason == "stop" || finish_reason == "end_turn" {
-            final_response = choice.message.content.clone();
-            state.conversation.add_assistant_message(&final_response);
-            break;
-        }
-        
-        // Check for tool calls
-        if use_tools {
-            if let Some(tool_calls) = &choice.message.tool_calls {
-                if !tool_calls.is_empty() {
-                    // Add assistant message with tool calls
-                    messages.push(choice.message.clone());
-                    
-                    // Execute each tool call
-                    for tool_call in tool_calls.iter() {
-                        tool_calls_made += 1;
-                        
-                        let mut args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                            .unwrap_or_else(|_| serde_json::json!({}));
 
-                        // Inject _user_id for memory tools
-                        if tool_call.function.name.starts_with("memory_") {
-                            if let Some(obj) = args.as_object_mut() {
-                                obj.insert("_user_id".to_string(), serde_json::json!(&state.user_id));
-                            }
-                        }
+    let tui_callback = TuiCallback;
 
-                        let call = ToolCall {
-                            id: tool_call.id.clone(),
-                            name: tool_call.function.name.clone(),
-                            arguments: args,
-                        };
-                        
-                        // Display tool call
-                        println!("   {}", format_tool_call(&call, state.verbose));
-                        
-                        // Execute tool
-                        let result = state.tools.execute(&call).await;
-                        
-                        let result_content = match result {
-                            Ok(r) => {
-                                let s = r.to_string();
-                                println!("   {} {}", style("✓").green(), format_tool_result(&s, 200));
-                                s
-                            },
-                            Err(e) => {
-                                let err = format!("Tool error: {}", e);
-                                println!("   {} {}", style("✗").red(), err);
-                                err
-                            }
-                        };
-                        
-                        // Add tool result to messages
-                        messages.push(AgentMessage::tool(&tool_call.id, &result_content));
+    let loop_input = AgentLoopInput {
+        messages,
+        llm_client: &state.llm_client,
+        tools: &state.tools,
+        tool_definitions,
+        config: LoopConfig::tui(),
+        user_id: Some(state.user_id.clone()),
+        chat_id: None,
+        callback: tui_callback,
+    };
 
-                        // Check for stuck loops
-                        if let Some(hint) = loop_guard.record(
-                            &tool_call.function.name,
-                            &tool_call.function.arguments,
-                            &result_content,
-                        ) {
-                            warn!("Loop guard triggered for tool '{}'", tool_call.function.name);
-                            println!("   {} {}", style("⚠").yellow(), style("Repetition detected, forcing reconsideration").dim());
-                            messages.push(AgentMessage::user(&hint));
-                        }
-                    }
+    let output = agentic_loop::run_agentic_loop(loop_input).await?;
 
-                    continue;
-                }
-            }
-        }
-        
-        // No tool calls - content is final response
-        if !choice.message.content.is_empty() {
-            final_response = choice.message.content.clone();
-            state.conversation.add_assistant_message(&final_response);
-            break;
-        }
-        
-        // Edge case: empty response
-        warn!("LLM returned empty response");
-        final_response = "I'm having trouble processing this request. Please try again.".to_string();
-        break;
+    // Store assistant response in conversation
+    if !output.response.is_empty() {
+        state.conversation.add_assistant_message(&output.response);
     }
-    
-    Ok(final_response)
+
+    Ok(output.response)
 }
 
 /// Main REPL loop

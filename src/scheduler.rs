@@ -5,8 +5,9 @@
 //! 2. Picks up and processes pending tasks if the agent is idle
 
 use crate::agent::{
-    ConversationManager, GenerationOptions, LoopGuard, Message as AgentMessage, OpenRouterClient,
-    ToolCall, ToolRegistry,
+    ConversationManager, Message as AgentMessage, OpenRouterClient,
+    ToolRegistry, LoopConfig, NoOpCallback,
+    agentic_loop::{self, AgentLoopInput},
     prompts::DEFAULT_SYSTEM_PROMPT,
 };
 use crate::database::{AgentStatusStore, ConfigParamStore, MemoryType, SoulStore, TaskStore, AgentTask};
@@ -265,104 +266,41 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Execute a task using a simplified agentic loop
+    /// Execute a task using the unified agentic loop
     async fn execute_task(&self, task: &AgentTask) -> Result<String> {
         let system_prompt = match self.soul_store.render_full_soul().await {
             Ok(soul) => format!("{}\n\n---\n\n## Agent Soul\n\n{}", DEFAULT_SYSTEM_PROMPT, soul),
             Err(_) => DEFAULT_SYSTEM_PROMPT.to_string(),
         };
 
-        let mut messages = vec![
+        let messages = vec![
             AgentMessage::system(&system_prompt),
             AgentMessage::user(&task.description),
         ];
 
         let tool_definitions = self.tools.definitions();
-        let mut final_response = String::new();
-        let mut loop_guard = LoopGuard::default();
 
-        const MAX_ITERATIONS: u32 = 20;
-        for _iteration in 0..MAX_ITERATIONS {
-            let response = self
-                .llm_client
-                .chat_with_tools(
-                    messages.clone(),
-                    tool_definitions.clone(),
-                    GenerationOptions::balanced(),
-                )
-                .await?;
+        let loop_input = AgentLoopInput {
+            messages,
+            llm_client: &self.llm_client,
+            tools: &self.tools,
+            tool_definitions,
+            config: LoopConfig::scheduler(),
+            user_id: Some(task.user_id.clone()),
+            chat_id: None,
+            callback: NoOpCallback::new(),
+        };
 
-            let choice = match response.choices.first() {
-                Some(c) => c,
-                None => {
-                    return Err(crate::Error::Internal("No LLM response".into()));
-                }
-            };
+        let output = agentic_loop::run_agentic_loop(loop_input).await?;
 
-            let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+        info!(
+            "Task {} agentic loop: outcome={:?}, iterations={}, duration={}ms",
+            task.id,
+            output.trace.outcome,
+            output.trace.steps.len(),
+            output.trace.total_duration_ms,
+        );
 
-            if finish_reason == "stop" || finish_reason == "end_turn" {
-                final_response = choice.message.content.clone();
-                break;
-            }
-
-            if let Some(tool_calls) = &choice.message.tool_calls {
-                if !tool_calls.is_empty() {
-                    messages.push(choice.message.clone());
-
-                    for tc in tool_calls {
-                        let args: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(serde_json::json!({}));
-
-                        // Inject _user_id for memory tools
-                        let mut call_args = args;
-                        if tc.function.name.starts_with("memory_") {
-                            if let Some(obj) = call_args.as_object_mut() {
-                                obj.insert(
-                                    "_user_id".to_string(),
-                                    serde_json::json!(task.user_id),
-                                );
-                            }
-                        }
-
-                        let call = ToolCall {
-                            id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            arguments: call_args,
-                        };
-
-                        let result = self.tools.execute(&call).await;
-                        let content = match result {
-                            Ok(r) => r.to_string(),
-                            Err(e) => format!("Tool error: {}", e),
-                        };
-                        messages.push(AgentMessage::tool(&tc.id, &content));
-
-                        // Check for stuck loops
-                        if let Some(hint) = loop_guard.record(
-                            &tc.function.name,
-                            &tc.function.arguments,
-                            &content,
-                        ) {
-                            warn!("Loop guard triggered for tool '{}' during task processing", tc.function.name);
-                            messages.push(AgentMessage::user(&hint));
-                        }
-                    }
-                    continue;
-                }
-            }
-
-            // No tool calls — treat content as final
-            if !choice.message.content.is_empty() {
-                final_response = choice.message.content.clone();
-                break;
-            }
-
-            // Edge case: empty response
-            break;
-        }
-
-        Ok(final_response)
+        Ok(output.response)
     }
 }

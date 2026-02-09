@@ -4,12 +4,13 @@
 //! Implements OpenClaw-style session sandboxing and DM pairing.
 
 use openagent::agent::{
-    ConversationManager, GenerationOptions, LoopGuard, Message as AgentMessage, OpenRouterClient,
-    ToolRegistry, ToolCall, ReadFileTool, WriteFileTool, SystemCommandTool,
+    ConversationManager, LoopConfig, Message as AgentMessage, OpenRouterClient,
+    ToolRegistry, ReadFileTool, WriteFileTool, SystemCommandTool,
     DuckDuckGoSearchTool, BraveSearchTool, PerplexitySearchTool,
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
     TaskCreateTool, TaskListTool, TaskUpdateTool,
     prompts::{DEFAULT_SYSTEM_PROMPT, Soul},
+    agentic_loop::{self, AgentLoopInput, LoopCallback, ToolObservation},
 };
 use openagent::config::Config;
 use openagent::config::DmPolicy;
@@ -925,6 +926,29 @@ async fn handle_command(
     Ok(())
 }
 
+/// Callback for the gateway agentic loop: sends typing indicators.
+struct GatewayCallback {
+    bot: Bot,
+    chat_id: ChatId,
+}
+
+#[async_trait::async_trait]
+impl LoopCallback for GatewayCallback {
+    async fn on_iteration_start(&self, _iteration: u32) {
+        let _ = self
+            .bot
+            .send_chat_action(self.chat_id, teloxide::types::ChatAction::Typing)
+            .await;
+    }
+
+    async fn on_tool_executed(&self, _tool_name: &str, _observation: &ToolObservation) {
+        let _ = self
+            .bot
+            .send_chat_action(self.chat_id, teloxide::types::ChatAction::Typing)
+            .await;
+    }
+}
+
 /// Handle regular chat messages - AGENTIC LOOP
 async fn handle_chat(
     bot: Bot,
@@ -995,198 +1019,45 @@ async fn handle_chat(
         messages.push(AgentMessage::system(&tools_note));
     }
 
-    // Maximum iterations to prevent infinite loops
-    const MAX_ITERATIONS: u32 = 50;
-    let mut iteration = 0;
-    let mut final_response = String::new();
-    let mut tool_calls_made = 0u32;
-    const MAX_TOOL_CALLS: u32 = 30;
-    let mut loop_guard = LoopGuard::default();
+    // Run the unified agentic loop
+    let gateway_callback = GatewayCallback {
+        bot: bot.clone(),
+        chat_id,
+    };
 
-    // Agentic loop: keep running until LLM stops calling tools
-    loop {
-        iteration += 1;
-        info!("Agent loop iteration {}/{}", iteration, MAX_ITERATIONS);
+    let loop_input = AgentLoopInput {
+        messages,
+        llm_client: &state.llm_client,
+        tools,
+        tool_definitions,
+        config: LoopConfig::gateway(),
+        user_id: Some(user_id.to_string()),
+        chat_id: Some(chat_id.0),
+        callback: gateway_callback,
+    };
 
-        if iteration > MAX_ITERATIONS {
-            warn!("Agent loop exceeded max iterations, using accumulated results");
-            // Synthesize a response from what we have
-            if final_response.is_empty() {
-                final_response = "I searched for information but couldn't find specific results. Please try a more specific query.".to_string();
+    let loop_output = match agentic_loop::run_agentic_loop(loop_input).await {
+        Ok(output) => output,
+        Err(e) => {
+            error!("Agentic loop error: {}", e);
+            bot.send_message(chat_id, format!("❌ Error: {}", e))
+                .await?;
+            if let Some(ref ss) = state.status_store {
+                let _ = ss.set_ready().await;
             }
-            break;
+            return Ok(());
         }
+    };
 
-        // If we've made too many tool calls, stop accepting more
-        let use_tools = tool_calls_made < MAX_TOOL_CALLS;
+    let final_response = loop_output.response.clone();
 
-        // Call LLM with or without tools based on limits
-        let response = if use_tools {
-            state.llm_client
-                .chat_with_tools(messages.clone(), tool_definitions.clone(), GenerationOptions::balanced())
-                .await
-        } else {
-            // Force no tools - just get a response
-            state.llm_client
-                .chat(messages.clone(), GenerationOptions::balanced())
-                .await
-        };
-
-        let response = match response {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!("LLM error: {}", e);
-                bot.send_message(chat_id, format!("❌ Error: {}", e))
-                    .await?;
-                // Cleanup on early return
-                if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
-                return Ok(());
-            }
-        };
-
-        // Get the first choice
-        let choice = match response.choices.first() {
-            Some(c) => c,
-            None => {
-                bot.send_message(chat_id, "❌ No response from LLM")
-                    .await?;
-                // Cleanup on early return
-                if let Some(ref ss) = state.status_store { let _ = ss.set_ready().await; }
-                return Ok(());
-            }
-        };
-
-        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
-        info!("LLM finish_reason: {}, has_content: {}, has_tool_calls: {}",
-            finish_reason,
-            !choice.message.content.is_empty(),
-            choice.message.tool_calls.is_some()
-        );
-
-        // Check finish reason - if "stop" or "end_turn", we're done
-        if finish_reason == "stop" || finish_reason == "end_turn" {
-            final_response = choice.message.content.clone();
-            info!("LLM finished with reason: {}", finish_reason);
-            debug!("Agent reply: {}", &final_response[..final_response.len().min(500)]);
-
-            // Store assistant response
-            {
-                let mut conversations = state.conversations.write().await;
-                if let Some(conv) = conversations.get_mut(user_id) {
-                    conv.add_assistant_message(&final_response);
-                    if let Some(usage) = &response.usage {
-                        conv.total_tokens += usage.total_tokens;
-                    }
-                }
-            }
-            break;
+    // Store assistant response in conversation
+    if !final_response.is_empty() {
+        let mut conversations = state.conversations.write().await;
+        if let Some(conv) = conversations.get_mut(user_id) {
+            conv.add_assistant_message(&final_response);
+            conv.total_tokens += loop_output.total_usage.total_tokens;
         }
-
-        // Check if there are tool calls (and we haven't hit the limit)
-        if use_tools {
-            if let Some(tool_calls) = &choice.message.tool_calls {
-                if !tool_calls.is_empty() {
-                    info!("LLM requested {} tool calls (total so far: {})", tool_calls.len(), tool_calls_made);
-
-                    // Add the assistant message with tool calls to context
-                    messages.push(choice.message.clone());
-
-                    // Execute each tool call
-                    for tool_call in tool_calls.iter() {
-                        tool_calls_made += 1;
-
-                        let tool_name = &tool_call.function.name;
-
-                        // Parse arguments
-                        let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                warn!("Failed to parse tool arguments for {}: {}", tool_name, e);
-                                serde_json::json!({})
-                            }
-                        };
-
-                        info!("Executing tool: {} ({}) (call #{}/{})", tool_name, session_label, tool_calls_made, MAX_TOOL_CALLS);
-                        debug!("Tool {} arguments: {}", tool_name, tool_call.function.arguments);
-
-                        // Show typing while executing tool
-                        let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
-
-                        // Inject _user_id for memory and task tools
-                        let mut call_args = args;
-                        if tool_name.starts_with("memory_") || tool_name.starts_with("task_") {
-                            if let Some(obj) = call_args.as_object_mut() {
-                                obj.insert("_user_id".to_string(), serde_json::json!(user_id));
-                                obj.insert("_chat_id".to_string(), serde_json::json!(chat_id.0));
-                            }
-                        }
-
-                        // Execute the tool using session-appropriate registry
-                        let call = ToolCall {
-                            id: tool_call.id.clone(),
-                            name: tool_name.clone(),
-                            arguments: call_args,
-                        };
-
-                        let result = tools.execute(&call).await;
-
-                        let result_content = match result {
-                            Ok(r) => {
-                                let s = r.to_string();
-                                info!("Tool {} succeeded, result length: {} chars", tool_name, s.len());
-                                debug!("Tool {} result: {}", tool_name, &s[..s.len().min(1000)]);
-                                s
-                            },
-                            Err(e) => {
-                                let err = format!("Tool error: {}", e);
-                                warn!("Tool {} failed: {}", tool_name, err);
-                                err
-                            }
-                        };
-
-                        // Add tool result to messages
-                        messages.push(AgentMessage::tool(&tool_call.id, &result_content));
-
-                        // Check for stuck loops (same tool returning same result repeatedly)
-                        if let Some(hint) = loop_guard.record(
-                            tool_name,
-                            &tool_call.function.arguments,
-                            &result_content,
-                        ) {
-                            warn!("Loop guard triggered for tool '{}', injecting hint", tool_name);
-                            messages.push(AgentMessage::user(&hint));
-                        }
-                    }
-
-                    // Continue loop - LLM will process tool results
-                    continue;
-                }
-            }
-        }
-
-        // No tool calls (or tools disabled) - treat content as final response
-        if !choice.message.content.is_empty() {
-            final_response = choice.message.content.clone();
-            info!("LLM returned content without tool calls, treating as final");
-            debug!("Agent reply: {}", &final_response[..final_response.len().min(500)]);
-
-            // Store assistant response in conversation
-            {
-                let mut conversations = state.conversations.write().await;
-                if let Some(conv) = conversations.get_mut(user_id) {
-                    conv.add_assistant_message(&final_response);
-                    if let Some(usage) = &response.usage {
-                        conv.total_tokens += usage.total_tokens;
-                    }
-                }
-            }
-            break;
-        }
-
-        // Edge case: no content, no tool calls - this shouldn't happen often
-        warn!("LLM returned empty response, finish_reason: {}", finish_reason);
-        final_response = "I'm having trouble processing this request. Please try again.".to_string();
-        break;
     }
 
     // Send response (split if too long)
