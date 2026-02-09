@@ -42,6 +42,7 @@ COPY migrations/ ./migrations/
 
 COPY SOUL.md ./
 COPY config.json.example ./
+COPY static/ ./static/
 
 # Build the actual binaries
 RUN cargo build --release
