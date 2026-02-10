@@ -14,7 +14,9 @@ use std::pin::Pin;
 use futures::Stream;
 
 use crate::error::Result;
-use super::types::Message;
+
+// Re-export Message type from agent module for backward compatibility
+pub use crate::agent::types::Message;
 
 /// Metadata about a provider
 #[derive(Debug, Clone, Serialize, Deserialize)]

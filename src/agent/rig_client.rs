@@ -4,6 +4,7 @@
 //! but with direct HTTP requests since rig-core doesn't have OpenRouter provider.
 
 use crate::config::OpenRouterConfig;
+use crate::core::provider::{LlmProvider, ProviderMeta, GenerationOptions, LlmResponse, ModelInfo, LlmStream};
 use crate::error::{Error, Result};
 use reqwest::Client;
 use secrecy::ExposeSecret;
@@ -154,5 +155,123 @@ impl SimpleAgentBuilder {
 
     pub fn client(&self) -> &RigLlmClient {
         &self.client
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for RigLlmClient {
+    fn meta(&self) -> &ProviderMeta {
+        // Static metadata for OpenRouter
+        static META: std::sync::OnceLock<ProviderMeta> = std::sync::OnceLock::new();
+        META.get_or_init(|| ProviderMeta {
+            id: "openrouter".to_string(),
+            name: "OpenRouter".to_string(),
+            description: "Unified API for multiple LLM providers".to_string(),
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            supports_streaming: true,
+            supports_tools: true,
+            supports_vision: true,
+        })
+    }
+
+    fn default_model(&self) -> &str {
+        &self.config.default_model
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        // For now, return a basic list. In a real implementation, this would call the OpenRouter models API
+        Ok(vec![
+            ModelInfo {
+                id: "anthropic/claude-3-haiku".to_string(),
+                name: "Claude 3 Haiku".to_string(),
+                description: Some("Fast and efficient model by Anthropic".to_string()),
+                context_length: Some(200000),
+                input_price: Some(0.25),
+                output_price: Some(1.25),
+            },
+            ModelInfo {
+                id: "anthropic/claude-3-sonnet".to_string(),
+                name: "Claude 3 Sonnet".to_string(),
+                description: Some("Balanced model by Anthropic".to_string()),
+                context_length: Some(200000),
+                input_price: Some(3.0),
+                output_price: Some(15.0),
+            },
+            ModelInfo {
+                id: "openai/gpt-4o-mini".to_string(),
+                name: "GPT-4o Mini".to_string(),
+                description: Some("Fast and affordable model by OpenAI".to_string()),
+                context_length: Some(128000),
+                input_price: Some(0.15),
+                output_price: Some(0.6),
+            },
+        ])
+    }
+
+    async fn generate(
+        &self,
+        messages: &[crate::agent::types::Message],
+        options: &GenerationOptions,
+    ) -> Result<LlmResponse> {
+        // Convert core::types::Message to OpenRouter format
+        let openrouter_messages: Vec<OpenRouterMessage> = messages
+            .iter()
+            .map(|msg| OpenRouterMessage {
+                role: msg.role.to_string(),
+                content: msg.content.clone(),
+            })
+            .collect();
+
+        let model = options.model.as_deref().unwrap_or(&self.config.default_model);
+
+        let request = OpenRouterCompletionRequest {
+            model: model.to_string(),
+            messages: openrouter_messages,
+            max_tokens: options.max_tokens,
+            temperature: options.temperature,
+            top_p: options.top_p,
+            stop: options.stop.clone(),
+            stream: Some(false),
+        };
+
+        let response = self
+            .client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::Provider(format!("OpenRouter request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(Error::Provider(format!("OpenRouter API error: {}", error_text)));
+        }
+
+        let completion_response: OpenRouterCompletionResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::Provider(format!("Failed to parse OpenRouter response: {}", e)))?;
+
+        if let Some(choice) = completion_response.choices.first() {
+            Ok(LlmResponse {
+                id: "openrouter-response".to_string(), // OpenRouter doesn't provide IDs in this format
+                model: model.to_string(),
+                content: choice.message.content.clone(),
+                finish_reason: Some("stop".to_string()), // Default finish reason
+                tool_calls: None, // Not implemented yet
+                usage: None, // Not implemented yet
+            })
+        } else {
+            Err(Error::Provider("No completion choices returned".to_string()))
+        }
+    }
+
+    async fn generate_stream(
+        &self,
+        _messages: &[crate::agent::types::Message],
+        _options: &GenerationOptions,
+    ) -> Result<LlmStream> {
+        // Streaming not implemented yet - return an error for now
+        Err(Error::Provider("Streaming not yet implemented for RigLlmClient".to_string()))
     }
 }

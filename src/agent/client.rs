@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// OpenRouter API client
+#[deprecated(note = "Use RigLlmClient instead")]
 #[derive(Clone)]
 pub struct OpenRouterClient {
     /// HTTP client

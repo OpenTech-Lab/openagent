@@ -251,6 +251,7 @@ pub async fn run_agent<C: LoopCallback>(
 ///
 /// Calls the LLM, executes tool calls, feeds results back, and repeats until
 /// the LLM stops requesting tools or limits are hit.
+#[deprecated(note = "Use run_agent() instead")]
 pub async fn run_agentic_loop<C: LoopCallback>(
     input: AgentLoopInput<'_, C>,
 ) -> Result<AgentLoopOutput> {
