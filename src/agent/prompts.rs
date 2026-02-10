@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use std::path::Path;
 use chrono::Utc;
+use crate::agent::types::{ExecutionPlan, StepResult};
 
 /// Default path for the SOUL.md file
 pub const SOUL_FILE_PATH: &str = "SOUL.md";
@@ -35,6 +36,99 @@ impl PromptTemplate {
         self.registry
             .render(&self.name, data)
             .map_err(|e| Error::Internal(format!("Template render error: {}", e)))
+    }
+
+    /// Create a planner prompt for generating execution plans
+    pub fn planner_prompt(goal: &str, tool_descriptions: &[String]) -> String {
+        let tools_text = if tool_descriptions.is_empty() {
+            "No tools are available.".to_string()
+        } else {
+            format!("Available tools:\n{}", tool_descriptions.join("\n"))
+        };
+
+        format!(
+            r#"You are an AI assistant that creates structured execution plans. Given a user goal, create a JSON execution plan with steps to accomplish it.
+
+User Goal: {}
+
+{}
+
+Return a JSON object with this structure:
+{{
+    "goal": "restated goal",
+    "steps": [
+        {{
+            "description": "what this step does",
+            "tool_name": "tool to call (or empty if no tool needed)",
+            "tool_args": {{}},
+            "depends_on": []
+        }}
+    ],
+    "reasoning": "why this plan makes sense"
+}}
+
+If no tools are needed, return an empty steps array. Tool names must match exactly from the available tools list."#,
+            goal, tools_text
+        )
+    }
+
+    /// Create a reflection prompt for reviewing execution results
+    pub fn reflection_prompt(goal: &str, results_summary: &str, attempt: u32) -> String {
+        format!(
+            r#"You are reviewing the execution of a plan to achieve this goal: {}
+
+{}
+
+This is attempt #{} of planning and execution.
+
+Based on these results, decide if the goal has been achieved:
+
+- If the goal is COMPLETE, provide the final answer
+- If the goal needs REPLANNING, start your response with "REPLAN:" followed by what went wrong
+
+Your response should be either:
+1. The final answer if the goal is achieved
+2. "REPLAN: [explanation of what needs to change]""#,
+            goal, results_summary, attempt
+        )
+    }
+
+    /// Create a final reflection prompt when max replans reached
+    pub fn final_reflection_prompt(goal: &str, results_summary: &str) -> String {
+        format!(
+            r#"You are reviewing the final execution results for this goal: {}
+
+{}
+
+Maximum replanning attempts reached. You must provide a final answer based on the available results, even if incomplete.
+
+Provide the best possible answer given the execution results:"#,
+            goal, results_summary
+        )
+    }
+
+    /// Create a replan prompt with context injection
+    pub fn replan_prompt(original_goal: &str, previous_plan: &ExecutionPlan, results: &[StepResult], feedback: &str) -> String {
+        let results_text = results.iter()
+            .map(|r| format!("Step {}: {} - {}", r.step_index, if r.success { "SUCCESS" } else { "FAILED" }, r.content.as_deref().unwrap_or("no output")))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        format!(
+            r#"Previous plan failed. Creating a new plan.
+
+Original Goal: {}
+
+Previous Plan Reasoning: {}
+
+Previous Results:
+{}
+
+Feedback: {}
+
+Create a new JSON execution plan addressing the feedback:"#,
+            original_goal, previous_plan.reasoning, results_text, feedback
+        )
     }
 }
 

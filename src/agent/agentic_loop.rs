@@ -8,6 +8,7 @@ use crate::agent::loop_guard::LoopGuard;
 use crate::agent::types::*;
 use crate::agent::OpenRouterClient;
 use crate::error::Result;
+use std::sync::Arc;
 use crate::tools::{ToolCall, ToolRegistry};
 
 use async_trait::async_trait;
@@ -33,6 +34,8 @@ pub struct LoopConfig {
     pub enable_reflection_prompt: bool,
     /// Fallback text returned when the loop exits without a final response.
     pub fallback_message: String,
+    /// If true, use the new Planner-Worker-Reflector state machine instead of the legacy ReAct loop.
+    pub use_state_machine: bool,
 }
 
 impl LoopConfig {
@@ -45,6 +48,7 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: "I searched for information but couldn't find specific results. Please try a more specific query.".into(),
+            use_state_machine: false, // Default to legacy behavior
         }
     }
 
@@ -57,6 +61,7 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: "I reached the maximum number of iterations. Please try a more specific request.".into(),
+            use_state_machine: false, // Default to legacy behavior
         }
     }
 
@@ -69,6 +74,7 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: String::new(),
+            use_state_machine: false, // Default to legacy behavior
         }
     }
 }
@@ -197,6 +203,34 @@ pub struct AgentLoopOutput {
 // ---------------------------------------------------------------------------
 // Core loop implementation
 // ---------------------------------------------------------------------------
+
+/// Unified agent runner that dispatches to either the legacy ReAct loop or the new Planner-Worker-Reflector state machine.
+///
+/// This function provides a single entry point for running agents, with feature flag control
+/// over which implementation to use.
+pub async fn run_agent<C: LoopCallback>(
+    input: AgentLoopInput<'_, C>,
+    rig_client: Option<&std::sync::Arc<crate::agent::rig_client::RigLlmClient>>,
+) -> Result<AgentLoopOutput> {
+    if input.config.use_state_machine {
+        // Use new Planner-Worker-Reflector state machine
+        if let Some(rig_client) = rig_client {
+            let mut state_machine = crate::agent::state_machine::PlannerWorkerReflector::new(
+                rig_client.clone(),
+                Arc::new(input.llm_client.clone()),
+                Arc::new(input.tools.clone()),
+                input.config.clone(),
+            );
+            state_machine.run(&input).await
+        } else {
+            // Fallback to legacy if no rig client provided
+            run_agentic_loop(input).await
+        }
+    } else {
+        // Use legacy ReAct loop
+        run_agentic_loop(input).await
+    }
+}
 
 /// Run the unified agentic loop.
 ///

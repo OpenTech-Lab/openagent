@@ -9,6 +9,7 @@ use crate::error::Result;
 use super::traits::{Tool, ToolCall, ToolResult};
 
 /// Registry of available tools
+#[derive(Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
 }

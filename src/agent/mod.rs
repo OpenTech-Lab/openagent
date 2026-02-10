@@ -14,11 +14,14 @@ pub mod agentic_loop;
 mod client;
 mod conversation;
 pub mod loop_guard;
+pub mod planner;
 pub mod prompts;
+pub mod reflector;
 pub(crate) mod types;
 
 pub mod rig_client;
 pub mod tool_bridge;
+pub mod state_machine;
 
 pub use agentic_loop::{
     run_agentic_loop, AgentLoopInput, AgentLoopOutput, LoopCallback, LoopConfig, LoopOutcome,
