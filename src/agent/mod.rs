@@ -17,6 +17,9 @@ pub mod loop_guard;
 pub mod prompts;
 pub(crate) mod types;
 
+pub mod rig_client;
+pub mod tool_bridge;
+
 pub use agentic_loop::{
     run_agentic_loop, AgentLoopInput, AgentLoopOutput, LoopCallback, LoopConfig, LoopOutcome,
     LoopTrace, NoOpCallback,
@@ -26,6 +29,9 @@ pub use conversation::{Conversation, ConversationManager};
 pub use loop_guard::LoopGuard;
 pub use prompts::PromptTemplate;
 pub use types::*;
+
+pub use rig_client::RigLlmClient;
+pub use tool_bridge::ToolRegistryRigExt;
 
 // Re-export tools from the new location for backward compatibility
 pub use crate::tools::{

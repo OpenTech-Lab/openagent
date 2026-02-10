@@ -1,6 +1,7 @@
 //! Tool registry - manages available tools for the agent
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::agent::types::ToolDefinition;
 use crate::error::Result;
@@ -9,7 +10,7 @@ use super::traits::{Tool, ToolCall, ToolResult};
 
 /// Registry of available tools
 pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl Default for ToolRegistry {
@@ -28,12 +29,12 @@ impl ToolRegistry {
 
     /// Register a tool
     pub fn register<T: Tool + 'static>(&mut self, tool: T) {
-        self.tools.insert(tool.name().to_string(), Box::new(tool));
+        self.tools.insert(tool.name().to_string(), Arc::new(tool));
     }
 
     /// Get a tool by name
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|t| t.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
     }
 
     /// Get all tool definitions
@@ -60,6 +61,12 @@ impl ToolRegistry {
     /// List tool names
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Convert this registry to a rig ToolSet
+    pub fn to_rig_toolset(&self) -> rig::tool::ToolSet {
+        use crate::agent::tool_bridge::ToolRegistryRigExt;
+        ToolRegistryRigExt::to_rig_toolset(self)
     }
 }
 

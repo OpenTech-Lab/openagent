@@ -120,6 +120,10 @@ tower-http = { version = "0.6", features = ["cors", "compression-br", "compressi
 humantime-serde = "1.1"
 rand = "0.9.2"
 
+# Rig AI framework for type-safe LLM orchestration
+rig-core = { version = "0.30", features = ["derive"] }
+schemars = "0.8"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"
