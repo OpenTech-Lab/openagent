@@ -9,6 +9,7 @@ use crate::agent::{
     ToolRegistry, LoopConfig, NoOpCallback,
     agentic_loop::{self, AgentLoopInput},
     prompts::DEFAULT_SYSTEM_PROMPT,
+    rig_client::RigLlmClient,
 };
 use crate::database::{AgentStatusStore, ConfigParamStore, MemoryType, SoulStore, TaskStore, AgentTask};
 use crate::memory::{ConversationSummarizer, MemoryRetriever};
@@ -24,6 +25,7 @@ pub struct Scheduler {
     soul_store: SoulStore,
     config_store: ConfigParamStore,
     llm_client: OpenRouterClient,
+    rig_client: Arc<RigLlmClient>,
     memory_retriever: Option<MemoryRetriever>,
     conversations: Arc<RwLock<ConversationManager>>,
     tools: Arc<ToolRegistry>,
@@ -36,6 +38,7 @@ impl Scheduler {
         soul_store: SoulStore,
         config_store: ConfigParamStore,
         llm_client: OpenRouterClient,
+        rig_client: Arc<RigLlmClient>,
         memory_retriever: Option<MemoryRetriever>,
         conversations: Arc<RwLock<ConversationManager>>,
         tools: Arc<ToolRegistry>,
@@ -46,6 +49,7 @@ impl Scheduler {
             soul_store,
             config_store,
             llm_client,
+            rig_client,
             memory_retriever,
             conversations,
             tools,
@@ -280,18 +284,24 @@ impl Scheduler {
 
         let tool_definitions = self.tools.definitions();
 
+        // Get use_state_machine setting from config params
+        let use_state_machine = match self.config_store.get("agent", "use_state_machine").await {
+            Ok(Some(param)) => param.value.parse::<bool>().unwrap_or(false),
+            _ => false,
+        };
+
         let loop_input = AgentLoopInput {
             messages,
             llm_client: &self.llm_client,
             tools: &self.tools,
             tool_definitions,
-            config: LoopConfig::scheduler(),
+            config: LoopConfig::scheduler_with_state_machine(use_state_machine),
             user_id: Some(task.user_id.clone()),
             chat_id: None,
             callback: NoOpCallback::new(),
         };
 
-        let output = agentic_loop::run_agentic_loop(loop_input).await?;
+        let output = agentic_loop::run_agent(loop_input, Some(&self.rig_client)).await?;
 
         info!(
             "Task {} agentic loop: outcome={:?}, iterations={}, duration={}ms",

@@ -41,6 +41,11 @@ pub struct LoopConfig {
 impl LoopConfig {
     /// Configuration suitable for the Telegram gateway (generous limits).
     pub fn gateway() -> Self {
+        Self::gateway_with_state_machine(false)
+    }
+
+    /// Configuration suitable for the Telegram gateway with state machine control.
+    pub fn gateway_with_state_machine(use_state_machine: bool) -> Self {
         Self {
             max_iterations: 50,
             max_tool_calls: 30,
@@ -48,12 +53,17 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: "I searched for information but couldn't find specific results. Please try a more specific query.".into(),
-            use_state_machine: false, // Default to legacy behavior
+            use_state_machine,
         }
     }
 
     /// Configuration suitable for the TUI.
     pub fn tui() -> Self {
+        Self::tui_with_state_machine(false)
+    }
+
+    /// Configuration suitable for the TUI with state machine control.
+    pub fn tui_with_state_machine(use_state_machine: bool) -> Self {
         Self {
             max_iterations: 20,
             max_tool_calls: 20,
@@ -61,12 +71,17 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: "I reached the maximum number of iterations. Please try a more specific request.".into(),
-            use_state_machine: false, // Default to legacy behavior
+            use_state_machine,
         }
     }
 
     /// Configuration suitable for the scheduler.
     pub fn scheduler() -> Self {
+        Self::scheduler_with_state_machine(false)
+    }
+
+    /// Configuration suitable for the scheduler with state machine control.
+    pub fn scheduler_with_state_machine(use_state_machine: bool) -> Self {
         Self {
             max_iterations: 20,
             max_tool_calls: 20,
@@ -74,7 +89,7 @@ impl LoopConfig {
             enable_planning_prompt: false,
             enable_reflection_prompt: false,
             fallback_message: String::new(),
-            use_state_machine: false, // Default to legacy behavior
+            use_state_machine,
         }
     }
 }

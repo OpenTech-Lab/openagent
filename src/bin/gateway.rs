@@ -11,6 +11,7 @@ use openagent::agent::{
     TaskCreateTool, TaskListTool, TaskUpdateTool,
     prompts::{DEFAULT_SYSTEM_PROMPT, Soul},
     agentic_loop::{self, AgentLoopInput, LoopCallback, ToolObservation},
+    rig_client::RigLlmClient,
 };
 use openagent::config::Config;
 use openagent::config::DmPolicy;
@@ -130,6 +131,7 @@ impl PairingManager {
 struct AppState {
     config: Config,
     llm_client: OpenRouterClient,
+    rig_client: Arc<RigLlmClient>,
     conversations: Arc<RwLock<ConversationManager>>,
     memory_retriever: Option<MemoryRetriever>,
     executor: Box<dyn CodeExecutor>,
@@ -157,6 +159,9 @@ impl AppState {
 
         // Initialize OpenRouter client
         let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
+
+        // Initialize Rig LLM client
+        let rig_client = Arc::new(RigLlmClient::new(openrouter_config.clone())?);
 
         // Try to initialize database pool (shared across all stores)
         let pg_pool = match &config.storage.postgres {
@@ -237,6 +242,13 @@ impl AppState {
                     "scheduler", "task_processing_enabled", "true",
                     ConfigValueType::Boolean, false,
                     Some("Enable periodic pending task processing"),
+                ).await;
+
+                // Seed agent config params
+                let _ = config_param_store.seed_if_absent(
+                    "agent", "use_state_machine", "false",
+                    ConfigValueType::Boolean, false,
+                    Some("Use Planner-Worker-Reflector state machine instead of ReAct loop"),
                 ).await;
 
                 // Seed all config params from config file/env into database
@@ -354,6 +366,7 @@ impl AppState {
         Ok(AppState {
             config,
             llm_client,
+            rig_client,
             conversations: Arc::new(RwLock::new(conversations)),
             memory_retriever,
             executor,
@@ -436,6 +449,7 @@ async fn main() -> Result<()> {
             soul_store.clone(),
             config_param_store.clone(),
             state.llm_client.clone(),
+            state.rig_client.clone(),
             state.memory_retriever.clone(),
             state.conversations.clone(),
             state.dm_tools.clone(),
@@ -1025,18 +1039,28 @@ async fn handle_chat(
         chat_id,
     };
 
+    // Get use_state_machine setting from config params
+    let use_state_machine = if let Some(ref cps) = state.config_param_store {
+        match cps.get("agent", "use_state_machine").await {
+            Ok(Some(param)) => param.value.parse::<bool>().unwrap_or(false),
+            _ => false,
+        }
+    } else {
+        false
+    };
+
     let loop_input = AgentLoopInput {
         messages,
         llm_client: &state.llm_client,
         tools,
         tool_definitions,
-        config: LoopConfig::gateway(),
+        config: LoopConfig::gateway_with_state_machine(use_state_machine),
         user_id: Some(user_id.to_string()),
         chat_id: Some(chat_id.0),
         callback: gateway_callback,
     };
 
-    let loop_output = match agentic_loop::run_agentic_loop(loop_input).await {
+    let loop_output = match agentic_loop::run_agent(loop_input, Some(&state.rig_client)).await {
         Ok(output) => output,
         Err(e) => {
             error!("Agentic loop error: {}", e);

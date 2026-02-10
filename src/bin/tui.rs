@@ -11,7 +11,9 @@ use openagent::agent::{
     MemorySaveTool, MemorySearchTool, MemoryListTool, MemoryDeleteTool,
     prompts::Soul,
     agentic_loop::{self, AgentLoopInput, LoopCallback, ToolObservation},
+    rig_client::RigLlmClient,
 };
+use std::sync::Arc;
 use openagent::config::Config;
 use openagent::database::{init_pool, Memory, MemoryType};
 use openagent::memory::{ConversationSummarizer, EmbeddingService, MemoryCache, MemoryRetriever};
@@ -44,12 +46,17 @@ struct Args {
     /// Enable persistent memory (requires DATABASE_URL)
     #[arg(long)]
     memory: bool,
+
+    /// Use Planner-Worker-Reflector state machine instead of ReAct loop
+    #[arg(long)]
+    planner: bool,
 }
 
 /// TUI application state
 struct TuiState {
     config: Config,
     llm_client: OpenRouterClient,
+    rig_client: Arc<RigLlmClient>,
     conversation: Conversation,
     tools: ToolRegistry,
     current_model: String,
@@ -57,6 +64,7 @@ struct TuiState {
     tools_enabled: bool,
     memory_retriever: Option<MemoryRetriever>,
     user_id: String,
+    use_planner: bool,
 }
 
 impl TuiState {
@@ -67,6 +75,7 @@ impl TuiState {
         let openrouter_config = config.provider.openrouter.clone()
             .ok_or_else(|| Error::Config("OpenRouter not configured".into()))?;
         let llm_client = OpenRouterClient::new(openrouter_config.clone())?;
+        let rig_client = Arc::new(RigLlmClient::new(openrouter_config.clone())?);
 
         // Determine model
         let current_model = args.model.clone()
@@ -149,6 +158,7 @@ impl TuiState {
         Ok(TuiState {
             config,
             llm_client,
+            rig_client,
             conversation,
             tools,
             current_model,
@@ -156,6 +166,7 @@ impl TuiState {
             tools_enabled: !args.no_tools,
             memory_retriever,
             user_id,
+            use_planner: args.planner,
         })
     }
 
@@ -354,13 +365,13 @@ async fn agent_loop(state: &mut TuiState, user_input: &str) -> Result<String> {
         llm_client: &state.llm_client,
         tools: &state.tools,
         tool_definitions,
-        config: LoopConfig::tui(),
+        config: LoopConfig::tui_with_state_machine(state.use_planner),
         user_id: Some(state.user_id.clone()),
         chat_id: None,
         callback: tui_callback,
     };
 
-    let output = agentic_loop::run_agentic_loop(loop_input).await?;
+    let output = agentic_loop::run_agent(loop_input, Some(&state.rig_client)).await?;
 
     // Store assistant response in conversation
     if !output.response.is_empty() {
