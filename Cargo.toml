@@ -23,6 +23,14 @@ name = "openagent-gateway"
 path = "src/bin/gateway.rs"
 
 [[bin]]
+name = "openagent-webhook-gateway"
+path = "src/bin/webhook_gateway.rs"
+
+[[bin]]
+name = "openagent-streaming-webhook-gateway"
+path = "src/bin/streaming_webhook_gateway.rs"
+
+[[bin]]
 name = "openagent-tui"
 path = "src/bin/tui.rs"
 

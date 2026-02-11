@@ -47,12 +47,8 @@ impl RigTool for RigToolAdapter {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        // Convert the args back to JSON string for OpenAgent tool
-        let args_json = serde_json::to_string(&args.args)
-            .map_err(|e| ToolError::JsonError(e))?;
-
-        // Execute the tool
-        let result = self.tool.execute(serde_json::Value::String(args_json)).await
+        // Pass the JSON value directly to the OpenAgent tool
+        let result = self.tool.execute(args.args).await
             .map_err(|e| ToolError::ToolCallError(Box::new(e)))?;
 
         // Convert result to JSON
